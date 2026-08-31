@@ -26,39 +26,57 @@ const GLARE_AND_FLIP: Pose = {
   head: { rot: [-0.22, 0, 0] },
   body: { rot: [0, 0.1, 0] },
   legFR: { rot: [-2.4, 0, 0.5] },
+  brow: { scale: [1, 1, 1] },
+};
+
+// Grazing keeps all four hooves down — the cow only ever rears up when it's
+// storming off to the police station.
+const headDown = (dip: number): Pose => ({
+  head: { rot: [0.9, 0, 0], pos: [0, -0.4 - dip, 0.14] },
+  earL: { rot: [-0.35, 0, 0] },
+  earR: { rot: [-0.35, 0, 0] },
+  body: { pos: [0, -0.03, 0.06] },
+});
+
+const FLIRTY: Pose = {
+  head: { rot: [-0.05, 0, 0.18] },
+  earL: { rot: [0, 0, 0.2] },
+  earR: { rot: [0, 0, -0.2] },
+};
+
+const LUNGE: Pose = {
+  body: { pos: [0, 0.05, 1.7], scale: [1.3, 1.3, 1.3] },
 };
 
 export const gags: Record<string, GagDef> = {
-  kiss: {
-    id: "kiss",
-    duration: 3400,
+  // Triggered by walking onto a grass tuft and pressing E.
+  eat: {
+    id: "eat",
+    duration: 5200,
     keyframes: [
       { t: 0, pose: {} },
-      { t: 250, pose: { head: { rot: [0.12, 0, 0] } } },
-      { t: 500, pose: { head: { rot: [-0.04, 0, 0] } } },
-      { t: 750, pose: { head: { rot: [0.12, 0, 0] } } },
-      {
-        t: 1000,
-        pose: { head: { rot: [-0.05, 0, 0.18] }, earL: { rot: [0, 0, 0.2] }, earR: { rot: [0, 0, -0.2] } },
-      },
-      {
-        t: 1550,
-        pose: { head: { rot: [-0.05, 0, 0.18] }, earL: { rot: [0, 0, 0.2] }, earR: { rot: [0, 0, -0.2] } },
-      },
-      {
-        t: 1900,
-        pose: { body: { pos: [0, 0.05, 1.7], scale: [1.3, 1.3, 1.3] }, head: { rot: [0, 0, 0] } },
-      },
-      {
-        t: 2650,
-        pose: { body: { pos: [0, 0.05, 1.7], scale: [1.3, 1.3, 1.3] }, head: { rot: [0, 0, 0] } },
-      },
-      { t: 3300, pose: {} },
+      { t: 350, pose: headDown(0) },
+      { t: 650, pose: headDown(0.06) },
+      { t: 950, pose: headDown(0) },
+      { t: 1250, pose: headDown(0.06) },
+      { t: 1550, pose: headDown(0) },
+      { t: 1850, pose: headDown(0.06) },
+      { t: 2150, pose: headDown(0) },
+      { t: 2500, pose: {} },
+      { t: 2900, pose: FLIRTY },
+      { t: 3300, pose: FLIRTY },
+      { t: 3650, pose: LUNGE },
+      { t: 4400, pose: LUNGE },
+      { t: 5100, pose: {} },
     ],
     script: [
-      { t: 50, sound: "chew" },
-      { t: 1000, sound: "kiss" },
-      { t: 1900, lips: true, sound: "kiss" },
+      { t: 350, sound: "chew" },
+      { t: 950, sound: "chew" },
+      { t: 1550, sound: "chew" },
+      { t: 2150, sound: "chew" },
+      { t: 2500, say: "Mmm. Okay, you're alright.", sound: "moo" },
+      { t: 2900, sound: "kiss" },
+      { t: 3650, lips: true, sound: "kiss" },
     ],
   },
 
