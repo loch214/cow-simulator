@@ -11,25 +11,17 @@ export const cowState = {
   facing: Math.PI,
   /** Current planar speed in units/sec — drives how hard the walk cycle plays. */
   speed: 0,
+  /** How fast the cow is turning, rad/sec. Drives lean, head lag and tail swing. */
+  turnRate: 0,
   /** Accumulated walk-cycle angle so the legs never snap when speed changes. */
   walkPhase: 0,
   /** 0 = on all fours, 1 = reared up on the hind legs. */
   stand: 0,
   /** 0 = gate shut, 1 = gate swung wide. */
   gateOpen: 0,
-  /** True while the cutscene is driving the cow; player input is ignored. */
-  scripted: false,
+  /** 0 = calm, 1 = just been slapped. Fades out; drives brows, ears and tail. */
+  anger: 0,
 };
-
-export function resetCowState() {
-  cowState.x = WAYPOINTS.penCentre.x;
-  cowState.z = WAYPOINTS.penCentre.z;
-  cowState.facing = Math.PI;
-  cowState.speed = 0;
-  cowState.stand = 0;
-  cowState.gateOpen = 0;
-  cowState.scripted = false;
-}
 
 /** Shortest-path turn from `from` toward `to`, capped at `maxStep` radians. */
 export function turnToward(from: number, to: number, maxStep: number): number {
@@ -37,6 +29,13 @@ export function turnToward(from: number, to: number, maxStep: number): number {
   if (diff < -Math.PI) diff += Math.PI * 2;
   if (Math.abs(diff) <= maxStep) return to;
   return from + Math.sign(diff) * maxStep;
+}
+
+/** Shortest signed distance from angle `from` to angle `to`. */
+export function angleDelta(from: number, to: number): number {
+  let diff = ((to - from + Math.PI) % (Math.PI * 2)) - Math.PI;
+  if (diff < -Math.PI) diff += Math.PI * 2;
+  return diff;
 }
 
 export function approach(current: number, target: number, step: number): number {

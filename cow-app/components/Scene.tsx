@@ -8,8 +8,9 @@ import Cow from "./Cow";
 import Pit from "./Pit";
 import GrassPatches from "./Grass";
 import PoliceStation from "./PoliceStation";
+import { useCowStore } from "@/lib/store";
 import { cowState } from "@/lib/cowState";
-import { cameraOffset, easeBehind, resetBehind } from "@/lib/camera";
+import { cameraOffset, easeBehind, resetBehind, stepShake } from "@/lib/camera";
 import { attachLook, isTouch } from "@/lib/input";
 import { PIT_RADIUS, STATION, WAYPOINTS } from "@/lib/world";
 
@@ -83,13 +84,19 @@ function CameraRig() {
 
     // On a phone there's no spare thumb for looking, so swing the camera around
     // behind the cow by itself. With a mouse, the player is in charge.
-    if (isTouch()) easeBehind(cowState.facing, dt);
+    //
+    // Never during a reaction: the kiss turns the cow to face the camera, and if
+    // the camera were also chasing round behind the cow the two would spin round
+    // each other forever.
+    if (isTouch() && !useCowStore.getState().activeGag) easeBehind(cowState.facing, dt);
 
     const off = cameraOffset();
+    // Impacts knock the camera about — a slap you can feel from behind the lens.
+    const shake = stepShake(dt);
     camera.position.set(
-      focus.current.x + off.x,
-      Math.max(0.4, focus.current.y + off.y),
-      focus.current.z + off.z
+      focus.current.x + off.x + shake.x,
+      Math.max(0.4, focus.current.y + off.y + shake.y),
+      focus.current.z + off.z + shake.z
     );
     camera.lookAt(focus.current);
   });

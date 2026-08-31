@@ -22,6 +22,12 @@ const MOVE_KEYS: Record<string, "fwd" | "back" | "left" | "right"> = {
 };
 
 function onKeyDown(e: KeyboardEvent) {
+  // The mouse belongs to the game by default. Pointer lock can only be asked for
+  // from inside a real user gesture, so the first key you press takes it back
+  // after Esc without you having to click anything.
+  if (e.code in MOVE_KEYS || e.code === "KeyE" || e.code === "KeyQ" || e.code === "KeyF") {
+    requestLock();
+  }
   if (e.code in MOVE_KEYS) {
     held.add(e.code);
     e.preventDefault(); // stop arrow keys from scrolling the page
@@ -105,13 +111,31 @@ export function moveAxis(): { x: number; y: number } {
   return { x, y };
 }
 
+/** The canvas, remembered so anything can ask for the pointer back. */
+let lockTarget: HTMLElement | null = null;
+let lastLockTry = 0;
+
+/**
+ * Take the mouse. Silently does nothing on touch, when we already have it, or
+ * within a second of the last try — Chrome refuses for about that long after Esc
+ * and there's no point hammering it.
+ */
+export function requestLock() {
+  if (!lockTarget || cam.locked || touchSeen) return;
+  const now = performance.now();
+  if (now - lastLockTry < 1000) return;
+  lastLockTry = now;
+  Promise.resolve(lockTarget.requestPointerLock?.()).catch(() => {});
+}
+
 /**
  * Bind looking to the 3D canvas.
  *
- * Mouse: clicking the scene captures the pointer, after which the view follows
- * the mouse with no button held (Esc gives the cursor back). Before the pointer
- * is captured — and for anyone who'd rather not capture it — dragging still
- * works.
+ * Mouse: the game holds the pointer by default — pressing anywhere on the field
+ * (or any gameplay key) captures it, after which the view follows the mouse with
+ * no button held. Esc gives the cursor back, and the next key or click takes it
+ * again. While the pointer is free, dragging still looks around, so a player who
+ * keeps hitting Esc can still play.
  *
  * Touch: a one-finger drag anywhere on the scene looks around, and a two-finger
  * pinch zooms. The on-screen stick sits above this and swallows its own touches.
@@ -120,17 +144,17 @@ export function attachLook(el: HTMLElement): () => void {
   const drags = new Map<number, { x: number; y: number }>();
   let pinchStart = 0;
   let pinchDist = 0;
-  let moved = 0;
 
   const onPointerDown = (e: PointerEvent) => {
     if (e.pointerType === "touch") markTouch();
+    // Any press on the field hands the mouse straight to the game.
+    if (e.pointerType === "mouse") requestLock();
     el.setPointerCapture?.(e.pointerId);
     drags.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (drags.size === 2) {
       pinchDist = twoFingerDistance(drags);
       pinchStart = cam.dist;
     }
-    moved = 0;
   };
 
   const onPointerMove = (e: PointerEvent) => {
@@ -144,7 +168,6 @@ export function attachLook(el: HTMLElement): () => void {
     const dy = e.clientY - prev.y;
     prev.x = e.clientX;
     prev.y = e.clientY;
-    moved += Math.abs(dx) + Math.abs(dy);
 
     if (drags.size >= 2) {
       const d = twoFingerDistance(drags);
@@ -155,14 +178,8 @@ export function attachLook(el: HTMLElement): () => void {
   };
 
   const onPointerUp = (e: PointerEvent) => {
-    const wasDragging = drags.delete(e.pointerId);
+    drags.delete(e.pointerId);
     if (drags.size < 2) pinchDist = 0;
-    // A clean click (not a drag) on the scene with a mouse captures the pointer.
-    // Chrome refuses for about a second after Esc, so swallow the rejection —
-    // the player just clicks again.
-    if (wasDragging && moved < 6 && e.pointerType === "mouse" && !cam.locked) {
-      Promise.resolve(el.requestPointerLock?.()).catch(() => {});
-    }
   };
 
   const onWheel = (e: WheelEvent) => {
@@ -178,6 +195,7 @@ export function attachLook(el: HTMLElement): () => void {
 
   const onTouchStart = () => markTouch();
 
+  lockTarget = el;
   el.addEventListener("pointerdown", onPointerDown);
   el.addEventListener("pointermove", onPointerMove);
   el.addEventListener("pointerup", onPointerUp);
@@ -194,6 +212,7 @@ export function attachLook(el: HTMLElement): () => void {
     el.removeEventListener("wheel", onWheel);
     el.removeEventListener("touchstart", onTouchStart);
     document.removeEventListener("pointerlockchange", onLockChange);
+    if (lockTarget === el) lockTarget = null;
     if (document.pointerLockElement === el) document.exitPointerLock?.();
   };
 }

@@ -1,7 +1,10 @@
 import { create } from "zustand";
-import { ensureAudio, smack, moo, chew, kissJingle } from "./audio";
+import { ensureAudio, smack, moo, chew, kissJingle, grunt } from "./audio";
 import { gags, insultLines, LIP_MARK_DURATION } from "./reactions";
+import { kissImpulse, slapImpulse } from "./physics";
+import { addShake } from "./camera";
 import { GRASS, REGROW_MS, SLAPS_BEFORE_POLICE } from "./world";
+import type { Speaker } from "./cutscene";
 
 export type GagId = "eat" | "shy" | "slap";
 
@@ -11,14 +14,18 @@ export interface CowStore {
   gagStartedAt: number;
   inCutscene: boolean;
   dialogue: string | null;
+  /** Who the current line belongs to, so the bubble can be labelled. */
+  speaker: Speaker;
   showLipMark: boolean;
+  /** Bumped on every kiss so the overlay replays its animation from the top. */
+  lipMarkSeq: number;
   slapCount: number;
   /** Timestamp each grass tuft was eaten, or null if it's standing. */
   grassEatenAt: (number | null)[];
   /** Id of the grass tuft the cow is close enough to eat, if any. */
   nearGrass: number | null;
 
-  setDialogue: (line: string | null) => void;
+  say: (line: string | null, speaker?: Speaker) => void;
   setNearGrass: (id: number | null) => void;
   regrow: (id: number) => void;
   interact: () => void;
@@ -44,7 +51,7 @@ function pickInsult(): string {
   return insultLines[i];
 }
 
-const sounds = { smack, moo, chew, kiss: kissJingle };
+const sounds = { smack, moo, chew, kiss: kissJingle, grunt };
 
 export const useCowStore = create<CowStore>((set, get) => {
   if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
@@ -55,12 +62,14 @@ export const useCowStore = create<CowStore>((set, get) => {
     gagStartedAt: 0,
     inCutscene: false,
     dialogue: null,
+    speaker: "cow",
     showLipMark: false,
+    lipMarkSeq: 0,
     slapCount: 0,
     grassEatenAt: GRASS.map(() => null),
     nearGrass: null,
 
-    setDialogue: (line) => set({ dialogue: line }),
+    say: (line, speaker = "cow") => set({ dialogue: line, speaker }),
 
     setNearGrass: (id) => {
       if (get().nearGrass !== id) set({ nearGrass: id });
@@ -97,10 +106,19 @@ export const useCowStore = create<CowStore>((set, get) => {
       const gag = gags[id];
       const slapCount = id === "slap" ? get().slapCount + 1 : get().slapCount;
 
+      // The hit itself is physics, not animation: the head is thrown by a spring
+      // and the camera takes a knock with it. Both happen on the same frame as
+      // the crack, whether or not the cow then storms off.
+      if (id === "slap") {
+        slapImpulse();
+        addShake(0.55);
+      }
+
       // Fifth slap: the cow stops arguing and goes over your head.
       if (id === "slap" && slapCount >= SLAPS_BEFORE_POLICE) {
         set({ activeGag: null, dialogue: null, showLipMark: false, slapCount });
         smack();
+        grunt();
         get().startCutscene();
         return;
       }
@@ -109,6 +127,7 @@ export const useCowStore = create<CowStore>((set, get) => {
         activeGag: id,
         gagStartedAt: performance.now(),
         dialogue: null,
+        speaker: "cow",
         slapCount,
       });
 
@@ -116,10 +135,16 @@ export const useCowStore = create<CowStore>((set, get) => {
         const timeout = setTimeout(() => {
           if (step.sound) sounds[step.sound]();
           if (step.say || step.dynamicSay) {
-            set({ dialogue: step.dynamicSay ? pickInsult() : step.say ?? null });
+            set({
+              dialogue: step.dynamicSay ? pickInsult() : step.say ?? null,
+              speaker: "cow",
+            });
           }
           if (step.lips) {
-            set({ showLipMark: true });
+            // The kiss lands: stamp the screen, knock the camera, squash the head.
+            addShake(0.3);
+            kissImpulse();
+            set({ showLipMark: true, lipMarkSeq: get().lipMarkSeq + 1 });
             const hide = setTimeout(() => set({ showLipMark: false }), LIP_MARK_DURATION);
             timeouts.push(hide);
           }

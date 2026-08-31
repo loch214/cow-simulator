@@ -24,3 +24,33 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * The lip mark the cow leaves on the screen after a kiss. It's meant to read as
+ * lipstick pressed onto the glass in front of you, so it stamps on with a squash,
+ * sits there, and then fades like it's being wiped off. --lip-ms is set from
+ * LIP_MARK_DURATION in lib/reactions.ts so the two can never disagree.
+ */
+@keyframes lip-stamp {
+  0% { opacity: 0; transform: scale(1.6) rotate(-11deg); }
+  5% { opacity: 1; transform: scale(0.9) rotate(-7deg); }
+  11% { transform: scale(1.05) rotate(-8.5deg); }
+  17% { transform: scale(1) rotate(-8deg); }
+  72% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.03) rotate(-8deg); }
+}
+
+@keyframes lip-fog {
+  0% { opacity: 0; transform: scale(0.6); }
+  7% { opacity: 0.5; transform: scale(1); }
+  45% { opacity: 0.16; transform: scale(1.05); }
+  100% { opacity: 0; transform: scale(1.2); }
+}
+
+.lip-stamp {
+  animation: lip-stamp var(--lip-ms, 4500ms) cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+}
+
+.lip-fog {
+  animation: lip-fog var(--lip-ms, 4500ms) ease-out forwards;
+}

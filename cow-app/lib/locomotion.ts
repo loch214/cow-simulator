@@ -13,13 +13,17 @@ export const STAND_TILT = -1.25;
 const STAND_LIFT = 0.8;
 const STAND_SHIFT = 0.33;
 
+/**
+ * Standing about. Breathing, the tail swing and the brows all come from the
+ * springs in `lib/physics.ts` now, so this is only the parts that idle on a
+ * fixed clock: the weight shifting, and ears twitching at flies.
+ */
 export function idlePose(t: number): Pose {
   return {
     body: { pos: [0, Math.sin(t * 1.5) * 0.02, 0] },
-    tail: { rot: [0, Math.sin(t * 2) * 0.3, 0] },
     earL: { rot: [0, 0, Math.sin(t * 3) * 0.05] },
     earR: { rot: [0, 0, Math.sin(t * 3 + 1) * 0.05] },
-    head: { rot: [Math.sin(t * 1.3) * 0.025, Math.sin(t * 0.7) * 0.05, 0] },
+    head: { rot: [0, Math.sin(t * 0.7) * 0.05, 0] },
   };
 }
 
@@ -82,8 +86,3 @@ export function bipedWalk(phase: number, amt: number): Pose {
     head: { rot: [0, 0, s * 0.05 * amt] },
   };
 }
-
-/** Angry brow + head-down glare, used whenever the cow is furious. */
-export const ANGRY_FACE: Pose = {
-  brow: { scale: [1, 1, 1] },
-};

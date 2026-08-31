@@ -8,6 +8,7 @@ import { SLAPS_BEFORE_POLICE } from "@/lib/world";
 
 export default function HUD() {
   const dialogue = useCowStore((s) => s.dialogue);
+  const speaker = useCowStore((s) => s.speaker);
   const nearGrass = useCowStore((s) => s.nearGrass);
   const inCutscene = useCowStore((s) => s.inCutscene);
   const activeGag = useCowStore((s) => s.activeGag);
@@ -24,20 +25,30 @@ export default function HUD() {
 
   return (
     <div className="pointer-events-none absolute inset-0 select-none">
-      {/* speech bubble */}
+      {/* speech bubble — labelled, because two of them talk at the station */}
       <div className="absolute inset-x-0 top-4 flex justify-center px-4">
         {dialogue && (
-          <div className="max-w-[85vw] rounded-2xl bg-white/92 px-5 py-2.5 text-center text-lg font-medium text-neutral-900 shadow-lg sm:text-xl">
-            {dialogue}
+          <div
+            className={`flex max-w-[85vw] items-center gap-2.5 rounded-2xl px-5 py-2.5 text-center text-lg font-medium shadow-lg sm:text-xl ${
+              speaker === "officer"
+                ? "bg-[#28407a]/92 text-white"
+                : "bg-white/92 text-neutral-900"
+            }`}
+          >
+            <span className="shrink-0 text-xl sm:text-2xl">
+              {speaker === "officer" ? "👮" : "🐄"}
+            </span>
+            <span>{dialogue}</span>
           </div>
         )}
       </div>
 
-      {/* "the mouse is free now" invitation — desktop only, and only until taken */}
+      {/* The game holds the mouse by default; this only shows once you've taken
+          it back with Esc, to say how to hand it over again. */}
       {!touch && !locked && (
         <div className="absolute inset-x-0 top-[72%] flex justify-center px-4">
           <div className="rounded-full bg-black/45 px-5 py-2.5 text-sm font-medium text-white/95 shadow-lg backdrop-blur-sm">
-            Click the field to look around freely · Esc to release
+            Click the field (or press a key) to look with the mouse · Esc frees the cursor
           </div>
         </div>
       )}
@@ -111,7 +122,7 @@ export default function HUD() {
       ) : (
         <div className="absolute bottom-4 left-4 hidden rounded-xl bg-black/35 px-3 py-2 text-xs leading-relaxed text-white/90 sm:block">
           <div><b>WASD</b> / arrows — walk where you&apos;re looking</div>
-          <div><b>Mouse</b> — look around · <b>Scroll</b> — zoom</div>
+          <div><b>Mouse</b> — look around (captured) · <b>Scroll</b> — zoom</div>
           <div><b>E</b> eat · <b>Q</b> pet · <b>F</b> slap</div>
         </div>
       )}

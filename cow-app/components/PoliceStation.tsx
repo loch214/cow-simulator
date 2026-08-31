@@ -80,12 +80,23 @@ export default function PoliceStation() {
   );
 }
 
-/** Stands outside the door. Nods along, does nothing. */
+/**
+ * Stands outside the door taking a statement. What he does is driven by who is
+ * currently talking, so the notepad, the nodding and the jaw all stay locked to
+ * the dialogue instead of running on their own clock.
+ */
 function Officer() {
   const rootRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Group>(null);
   const armRef = useRef<THREE.Group>(null);
+  const freeArmRef = useRef<THREE.Group>(null);
+  const jawRef = useRef<THREE.Mesh>(null);
   const inCutscene = useCowStore((s) => s.inCutscene);
+  const speaker = useCowStore((s) => s.speaker);
+  const dialogue = useCowStore((s) => s.dialogue);
+
+  const talking = inCutscene && speaker === "officer" && dialogue !== null;
+  const listening = inCutscene && !talking;
 
   // positioned relative to the station group
   const px = OFFICER.x - STATION.x;
@@ -94,13 +105,37 @@ function Officer() {
   useFrame((state) => {
     const t = state.clock.elapsedTime;
     if (rootRef.current) rootRef.current.position.y = Math.sin(t * 1.6) * 0.015;
+
     if (headRef.current) {
-      // slow, unimpressed nodding while the cow makes its case
-      headRef.current.rotation.x = inCutscene ? Math.sin(t * 2.2) * 0.12 : Math.sin(t * 0.8) * 0.03;
-      headRef.current.rotation.y = inCutscene ? 0 : Math.sin(t * 0.5) * 0.2;
+      if (talking) {
+        // chin up, delivering the bad news
+        headRef.current.rotation.x = -0.06 + Math.sin(t * 3.4) * 0.05;
+        headRef.current.rotation.y = Math.sin(t * 1.9) * 0.12;
+      } else if (listening) {
+        // slow, unimpressed nodding while the cow makes its case
+        headRef.current.rotation.x = 0.08 + Math.sin(t * 2.2) * 0.1;
+        headRef.current.rotation.y = 0;
+      } else {
+        headRef.current.rotation.x = Math.sin(t * 0.8) * 0.03;
+        headRef.current.rotation.y = Math.sin(t * 0.5) * 0.2;
+      }
     }
+
     if (armRef.current) {
-      armRef.current.rotation.x = inCutscene ? -0.6 + Math.sin(t * 1.3) * 0.08 : 0;
+      // the notepad only comes up while there's a statement being given, and the
+      // hand scribbles at it in bursts
+      const scribble = listening ? Math.sin(t * 14) * 0.05 : 0;
+      armRef.current.rotation.x = inCutscene ? -0.6 + Math.sin(t * 1.3) * 0.08 + scribble : 0;
+    }
+    if (freeArmRef.current) {
+      // a small "well, what did you expect" hand when it's his turn
+      freeArmRef.current.rotation.x = talking ? -0.7 + Math.sin(t * 2.6) * 0.18 : 0;
+      freeArmRef.current.rotation.z = talking ? -0.35 : 0;
+    }
+    if (jawRef.current) {
+      // the jaw only moves on his own lines, which is how you can tell who is
+      // speaking without reading the bubble
+      jawRef.current.scale.y = talking ? 0.5 + Math.abs(Math.sin(t * 9)) * 1.1 : 0.35;
     }
   });
 
@@ -132,10 +167,12 @@ function Officer() {
             <meshStandardMaterial color="#f7f4e8" />
           </mesh>
         </group>
-        <mesh position={[-0.3, 1.02, 0]} castShadow>
-          <cylinderGeometry args={[0.07, 0.07, 0.56, 8]} />
-          <meshStandardMaterial color={NAVY} />
-        </mesh>
+        <group ref={freeArmRef} position={[-0.3, 1.3, 0]}>
+          <mesh position={[0, -0.28, 0]} castShadow>
+            <cylinderGeometry args={[0.07, 0.07, 0.56, 8]} />
+            <meshStandardMaterial color={NAVY} />
+          </mesh>
+        </group>
         {/* head + cap */}
         <group ref={headRef} position={[0, 1.62, 0]}>
           <mesh castShadow>
@@ -157,6 +194,11 @@ function Officer() {
           <mesh position={[0.08, 0.02, 0.19]}>
             <sphereGeometry args={[0.035, 8, 8]} />
             <meshStandardMaterial color="#1a1a1a" />
+          </mesh>
+          {/* jaw — flaps only on his own lines */}
+          <mesh ref={jawRef} position={[0, -0.11, 0.185]} scale={[1, 0.35, 1]}>
+            <boxGeometry args={[0.12, 0.06, 0.05]} />
+            <meshStandardMaterial color="#7d3b3b" />
           </mesh>
         </group>
       </group>

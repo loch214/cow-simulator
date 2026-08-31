@@ -13,12 +13,6 @@ export type PartName =
   | "blush"
   | "brow";
 
-export const PART_NAMES: PartName[] = [
-  "body", "head", "earL", "earR",
-  "legFL", "legFR", "legBL", "legBR",
-  "tail", "blush", "brow",
-];
-
 export interface PartPose {
   pos?: [number, number, number];
   rot?: [number, number, number];
@@ -26,8 +20,6 @@ export interface PartPose {
 }
 
 export type Pose = Partial<Record<PartName, PartPose>>;
-
-export const ZERO_POSE: Pose = {};
 
 export function lerpPose(a: Pose, b: Pose, t: number): Pose {
   const out: Pose = {};
@@ -66,20 +58,6 @@ export function addPoses(...poses: Pose[]): Pose {
   return poses.reduce((acc, p) => addPose(acc, p), {} as Pose);
 }
 
-/** Multiply every delta in a pose by `k` — used to fade a layer in and out. */
-export function scalePose(p: Pose, k: number): Pose {
-  const out: Pose = {};
-  for (const part of Object.keys(p) as PartName[]) {
-    const v = p[part] ?? {};
-    out[part] = {
-      pos: mulTriple(v.pos, k),
-      rot: mulTriple(v.rot, k),
-      scale: mulTriple(v.scale, k),
-    };
-  }
-  return out;
-}
-
 function partsIn(a: Pose, b: Pose): PartName[] {
   return [...new Set<PartName>([
     ...(Object.keys(a) as PartName[]),
@@ -103,11 +81,6 @@ function addTriple(a: Triple | undefined, b: Triple | undefined): Triple {
   const av = a ?? [0, 0, 0];
   const bv = b ?? [0, 0, 0];
   return [av[0] + bv[0], av[1] + bv[1], av[2] + bv[2]];
-}
-
-function mulTriple(a: Triple | undefined, k: number): Triple {
-  const av = a ?? [0, 0, 0];
-  return [av[0] * k, av[1] * k, av[2] * k];
 }
 
 export interface PoseKey {

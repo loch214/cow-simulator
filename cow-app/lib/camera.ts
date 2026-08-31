@@ -55,6 +55,43 @@ export function cameraOffset(): { x: number; y: number; z: number } {
   };
 }
 
+/**
+ * Camera shake. `trauma` is 0..1 and decays on its own; the offset is trauma
+ * SQUARED so a small knock is barely felt and a real impact is not.
+ */
+let trauma = 0;
+
+export function addShake(amount: number) {
+  trauma = Math.min(1, trauma + amount);
+}
+
+const SHAKE_DECAY = 1.8;
+
+/** Advance the shake and return the world-space offset to add to the camera. */
+export function stepShake(dt: number): { x: number; y: number; z: number } {
+  if (trauma <= 0) return { x: 0, y: 0, z: 0 };
+  trauma = Math.max(0, trauma - dt * SHAKE_DECAY);
+  const k = trauma * trauma * 0.55;
+  const t = performance.now() / 1000;
+  return {
+    x: Math.sin(t * 47) * k,
+    y: Math.sin(t * 39 + 1.7) * k,
+    z: Math.sin(t * 53 + 3.1) * k,
+  };
+}
+
+/**
+ * Where the camera sits relative to the cow, split into the flat distance along
+ * the ground and the height above it. The kiss uses this to work out how far the
+ * cow has to lunge to reach the lens.
+ */
+export function cameraGap(): { flat: number; up: number } {
+  return {
+    flat: Math.cos(cam.pitch) * cam.dist,
+    up: Math.sin(cam.pitch) * cam.dist,
+  };
+}
+
 export function resetBehind(facing: number) {
   cam.yaw = facing + Math.PI;
 }

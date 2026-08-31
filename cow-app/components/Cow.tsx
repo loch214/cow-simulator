@@ -4,12 +4,14 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { useCowStore } from "@/lib/store";
-import { gags } from "@/lib/reactions";
-import { addPoses, samplePose, Pose, PartName } from "@/lib/poses";
+import { gags, kissAmount, KISS_BACK } from "@/lib/reactions";
+import { addPose, addPoses, samplePose, Pose, PartName } from "@/lib/poses";
 import { idlePose, quadWalk } from "@/lib/locomotion";
-import { approach, cowState, turnToward } from "@/lib/cowState";
+import { angleDelta, approach, cowState, turnToward } from "@/lib/cowState";
 import { moveAxis, onAction, onInteract, startInput } from "@/lib/input";
-import { lookForward } from "@/lib/camera";
+import { cam, cameraGap, lookForward } from "@/lib/camera";
+import { cowPhysics, kickSpring, relaxPhysics, stepCowPhysics } from "@/lib/physics";
+import { creak, step as footstep } from "@/lib/audio";
 import { newRunner, stepCutscene, type CutsceneRunner } from "@/lib/cutscene";
 import { GRASS, INTERACT_RANGE, PIT_INNER, TURN_SPEED, WALK_SPEED } from "@/lib/world";
 
@@ -69,9 +71,9 @@ export default function Cow() {
     if (inCutscene) {
       runnerRef.current = newRunner();
       endedRef.current = false;
+      relaxPhysics(); // start the walk to the station from a settled body
     } else {
       runnerRef.current = null;
-      cowState.scripted = false;
     }
   }, [inCutscene]);
 
@@ -90,16 +92,18 @@ export default function Cow() {
 
   useFrame((state, delta) => {
     const dt = Math.min(delta, 0.05); // a long stall shouldn't teleport the cow
+    const wasFacing = cowState.facing;
     let pose: Pose;
 
     if (inCutscene && runnerRef.current) {
-      cowState.scripted = true;
       const result = stepCutscene(runnerRef.current, dt);
-      if (result.say !== undefined) useCowStore.getState().setDialogue(result.say);
+      if (result.say !== undefined) {
+        useCowStore.getState().say(result.say, result.speaker);
+      }
+      if (result.sound === "creak") creak();
       pose = result.pose;
       if (result.finished && !endedRef.current) {
         endedRef.current = true;
-        cowState.scripted = false;
         useCowStore.getState().endCutscene();
       }
     } else if (activeGag) {
@@ -108,12 +112,27 @@ export default function Cow() {
       const gag = gags[activeGag];
       const elapsed = Math.min(performance.now() - gagStartedAt, gag.duration);
       pose = samplePose(gag.keyframes, elapsed);
+      // The pet gag ends by launching the cow at the camera, and how far that is
+      // depends on where the camera happens to be — so it can't be keyframed.
+      if (activeGag === "shy") pose = addPose(pose, kissLunge(elapsed, dt));
     } else {
       pose = drive(dt, grassEatenAt);
     }
 
+    // How fast the cow is turning drives the head lag, the lean and the tail.
+    cowState.turnRate = angleDelta(wasFacing, cowState.facing) / Math.max(dt, 0.0001);
+
     // One shared stride clock, so the legs never jump when a gag ends mid-step.
+    const lastPhase = cowState.walkPhase;
     cowState.walkPhase += dt * cowState.speed * 3.2;
+    // Two hoofbeats per stride: a footfall every half cycle.
+    if (Math.floor(lastPhase / Math.PI) !== Math.floor(cowState.walkPhase / Math.PI)) {
+      footstep();
+    }
+
+    // Springs go on top of whatever ran above, in every mode — a slap landed
+    // during a gag still has to wobble its way out afterwards.
+    pose = addPose(pose, stepCowPhysics(dt));
 
     if (pivotRef.current) {
       pivotRef.current.position.set(cowState.x, 0, cowState.z);
@@ -267,6 +286,42 @@ function Leg() {
   );
 }
 
+/** How far the head sits ahead of the cow's own position, along its facing. */
+const HEAD_FORWARD = BASE.head.pos[2];
+/** How close the muzzle gets to the lens at the height of the kiss. */
+const KISS_GAP = 1.0;
+
+/**
+ * The kiss, as an actual move through 3D space rather than a canned pose: the
+ * cow turns to face the lens, then throws itself along the line between its own
+ * head and the camera until the muzzle is a few centimetres off the glass. It
+ * grows enormous on the way in purely because it really is that close — this is
+ * perspective, not a scale-up.
+ */
+function kissLunge(elapsed: number, dt: number): Pose {
+  // Line itself up with the lens during the wind-up, so the lunge goes at YOU
+  // wherever you happen to have dragged the camera round to.
+  if (elapsed > 250 && elapsed < KISS_BACK) {
+    cowState.facing = turnToward(cowState.facing, cam.yaw, 7 * dt);
+  }
+
+  const k = kissAmount(elapsed);
+  if (k <= 0.0001) return {};
+
+  const gap = cameraGap();
+  const reach = Math.max(0.001, Math.hypot(gap.flat, gap.up));
+  const t = Math.max(0, 1 - KISS_GAP / reach); // stop just short of the lens
+
+  return {
+    body: { pos: [0, gap.up * t * k, (gap.flat * t - HEAD_FORWARD) * k] },
+    // chin up, looking straight down the barrel
+    head: { rot: [-0.22 * k, 0, 0] },
+  };
+}
+
+/** True while the cow is pressed against the fence, so it only thumps once. */
+let onFence = false;
+
 /**
  * Player-driven movement for one frame. Input is camera-relative — "up" always
  * means away from the camera, whichever way you've dragged it around.
@@ -284,23 +339,41 @@ function drive(dt: number, grassEatenAt: (number | null)[]): Pose {
   let dx = fx * axis.y + rx * axis.x;
   let dz = fz * axis.y + rz * axis.x;
   const len = Math.hypot(dx, dz);
+  const gait = Math.min(1, cowState.speed / WALK_SPEED);
 
   if (len > 0.001) {
     dx /= len;
     dz /= len;
-    cowState.speed = approach(cowState.speed, WALK_SPEED, dt * 14);
-    cowState.facing = turnToward(cowState.facing, Math.atan2(dx, dz), TURN_SPEED * dt);
+    // Half a tonne of cow doesn't start or stop instantly, and it turns wider the
+    // faster it's already going.
+    cowState.speed = approach(cowState.speed, WALK_SPEED * len, dt * 9);
+    const turn = TURN_SPEED * (1 - 0.4 * gait);
+    cowState.facing = turnToward(cowState.facing, Math.atan2(dx, dz), turn * dt);
     cowState.x += dx * cowState.speed * dt;
     cowState.z += dz * cowState.speed * dt;
   } else {
-    cowState.speed = approach(cowState.speed, 0, dt * 18);
+    // Let go and it coasts to a stop rather than freezing mid-stride.
+    cowState.speed = approach(cowState.speed, 0, dt * 7);
+    cowState.x += Math.sin(cowState.facing) * cowState.speed * dt;
+    cowState.z += Math.cos(cowState.facing) * cowState.speed * dt;
   }
 
-  // The fence is the whole point of the pen: you can't walk out of it.
+  // The fence is the whole point of the pen: you can't walk out of it. Walking
+  // into it is a collision, so the cow stops dead and rocks forward on impact.
   const r = Math.hypot(cowState.x, cowState.z);
   if (r > PIT_INNER) {
     cowState.x = (cowState.x / r) * PIT_INNER;
     cowState.z = (cowState.z / r) * PIT_INNER;
+    if (!onFence) {
+      onFence = true;
+      kickSpring(cowPhysics.shoveZ, 0.55 * gait);
+      kickSpring(cowPhysics.headPitch, 2.2 * gait);
+      kickSpring(cowPhysics.earL, 3 * gait);
+      kickSpring(cowPhysics.earR, 3 * gait);
+    }
+    cowState.speed *= 0.4;
+  } else {
+    onFence = false;
   }
 
   // Contextual prompt: closest tuft still standing, within reach.
