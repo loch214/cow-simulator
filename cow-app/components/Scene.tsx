@@ -1,62 +1,130 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { advance, Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Sky } from "@react-three/drei";
 import Cow from "./Cow";
 import Pit from "./Pit";
 import GrassPatches from "./Grass";
 import PoliceStation from "./PoliceStation";
+import Environment from "./Environment";
 import { useCowStore } from "@/lib/store";
 import { cowState } from "@/lib/cowState";
 import { cameraOffset, easeBehind, resetBehind, stepShake } from "@/lib/camera";
 import { attachLook, isTouch } from "@/lib/input";
-import { PIT_RADIUS, STATION, WAYPOINTS } from "@/lib/world";
+import { WAYPOINTS } from "@/lib/world";
+
+/**
+ * Mid-afternoon, sun low and behind-left. Everything that needs to agree about
+ * where the sun is — the sky dome, the shadow-casting light and the warmth of
+ * the fill — reads it from here, so they can't drift apart.
+ */
+const SUN = new THREE.Vector3(-24, 21, 14);
+/** Haze colour. Matching it to the sky at the horizon is what hides the world's edge. */
+const HAZE = "#bcd0dd";
 
 export default function Scene() {
   return (
     <Canvas
-      shadows
-      camera={{ position: [1.6, 3.2, 7.4], fov: 45 }}
+      // "percentage" is PCFShadowMap. The default R3F picks (PCFSoft) is
+      // deprecated in this version of three and falls back to this anyway, with
+      // a console warning every reload.
+      shadows="percentage"
+      dpr={[1, 2]}
+      camera={{ position: [1.6, 3.2, 7.4], fov: 45, near: 0.12, far: 400 }}
+      gl={{ antialias: true }}
+      onCreated={({ gl, scene }) => {
+        // Filmic tone mapping keeps the white of the cow and the bright sky from
+        // clipping to flat paper, which is most of what makes untuned WebGL look
+        // like a screensaver.
+        gl.toneMapping = THREE.ACESFilmicToneMapping;
+        gl.toneMappingExposure = 1.05;
+        scene.fog = new THREE.FogExp2(HAZE, 0.011);
+      }}
       style={{ width: "100%", height: "100%", touchAction: "none" }}
     >
-      <Sky sunPosition={[10, 8, 5]} turbidity={3} />
-      <ambientLight intensity={0.65} />
-      <directionalLight
-        position={[8, 12, 6]}
-        intensity={1.15}
-        castShadow
-        shadow-mapSize={[1024, 1024]}
-        shadow-camera-left={-20}
-        shadow-camera-right={26}
-        shadow-camera-top={20}
-        shadow-camera-bottom={-20}
-      />
+      <Sky sunPosition={SUN} turbidity={4} rayleigh={1.1} mieCoefficient={0.006} />
 
-      {/* the field everything sits on */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <planeGeometry args={[90, 90]} />
-        <meshStandardMaterial color="#6fae4a" />
-      </mesh>
+      {/* Sky above, warm bounce off the field below. */}
+      <hemisphereLight args={["#bcd8f2", "#5c6b3a", 0.85]} />
+      <ambientLight intensity={0.18} />
+      <SunLight />
 
-      {/* dirt track from the gate down to the station */}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[(PIT_RADIUS + STATION.x - 2.4) / 2, 0.008, 0]}
-      >
-        <planeGeometry args={[STATION.x - 2.4 - PIT_RADIUS + 1.5, 1.6]} />
-        <meshStandardMaterial color="#b09268" />
-      </mesh>
-
+      <Environment />
       <Pit />
       <GrassPatches />
       <Cow />
       <PoliceStation />
-      <Scenery />
 
       <CameraRig />
+      <DevBridge />
     </Canvas>
+  );
+}
+
+/**
+ * Hands the live three.js state to the console in dev, next to `__cowStore()`.
+ *
+ * This exists because an automated browser tab runs backgrounded, and Chrome
+ * suspends requestAnimationFrame in a hidden tab — so an agent screenshotting
+ * this page gets a frozen frame or a black one. `__cowScene.advance(t, true)`
+ * steps the whole frame loop by hand, which makes the scene checkable without a
+ * human watching it. See "Verifying without watching it" in HANDOFF.md.
+ */
+function DevBridge() {
+  const state = useThree();
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__cowScene = { ...state, advance };
+    return () => {
+      delete w.__cowScene;
+    };
+  }, [state]);
+  return null;
+}
+
+/**
+ * The sun, and the one thing that casts shadows.
+ *
+ * A single shadow map stretched over the whole 70-unit world would be too coarse
+ * to show a hoof, so the shadow camera is kept small and dragged along behind the
+ * cow. You always get a sharp shadow where you are looking, and the far field
+ * simply has none — which nobody notices.
+ */
+function SunLight() {
+  const ref = useRef<THREE.DirectionalLight>(null);
+  const target = useMemo(() => new THREE.Object3D(), []);
+
+  useFrame(() => {
+    const light = ref.current;
+    if (!light) return;
+    target.position.set(cowState.x, 0, cowState.z);
+    target.updateMatrixWorld();
+    light.position.set(cowState.x + SUN.x * 0.5, SUN.y * 0.5, cowState.z + SUN.z * 0.5);
+  });
+
+  return (
+    <>
+      <primitive object={target} />
+      <directionalLight
+        ref={ref}
+        color="#fff3dd"
+        intensity={2.1}
+        target={target}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-bias={-0.0006}
+        shadow-normalBias={0.022}
+        shadow-camera-near={1}
+        shadow-camera-far={45}
+        shadow-camera-left={-11}
+        shadow-camera-right={11}
+        shadow-camera-top={11}
+        shadow-camera-bottom={-11}
+      />
+    </>
   );
 }
 
@@ -67,7 +135,8 @@ export default function Scene() {
  */
 function CameraRig() {
   const { camera, gl } = useThree();
-  const focus = useRef(new THREE.Vector3(WAYPOINTS.penCentre.x, 0.85, WAYPOINTS.penCentre.z));
+  const focus = useRef(new THREE.Vector3(WAYPOINTS.penCentre.x, 1.05, WAYPOINTS.penCentre.z));
+  const want = useMemo(() => new THREE.Vector3(), []);
 
   useEffect(() => {
     resetBehind(cowState.facing);
@@ -79,7 +148,7 @@ function CameraRig() {
 
     // Ease the point we're orbiting toward the cow so the camera doesn't jitter
     // with every step of the walk cycle.
-    const want = new THREE.Vector3(cowState.x, 0.85 + cowState.stand * 0.5, cowState.z);
+    want.set(cowState.x, 1.05 + cowState.stand * 0.75, cowState.z);
     focus.current.lerp(want, 1 - Math.pow(0.0015, dt));
 
     // On a phone there's no spare thumb for looking, so swing the camera around
@@ -95,39 +164,11 @@ function CameraRig() {
     const shake = stepShake(dt);
     camera.position.set(
       focus.current.x + off.x + shake.x,
-      Math.max(0.4, focus.current.y + off.y + shake.y),
+      Math.max(0.5, focus.current.y + off.y + shake.y),
       focus.current.z + off.z + shake.z
     );
     camera.lookAt(focus.current);
   });
 
   return null;
-}
-
-/** A few trees so the world doesn't read as an empty green disc. */
-function Scenery() {
-  const spots: [number, number][] = [
-    [-11, -6], [-13, 4], [-7, 11], [4, -12], [11, -9],
-    [9, 10], [17, 7], [20, -6], [-2, 14], [24, 2],
-  ];
-  return (
-    <group>
-      {spots.map(([x, z], i) => (
-        <group key={i} position={[x, 0, z]} scale={0.9 + ((i * 7) % 5) * 0.12}>
-          <mesh position={[0, 0.7, 0]} castShadow>
-            <cylinderGeometry args={[0.16, 0.22, 1.4, 8]} />
-            <meshStandardMaterial color="#7a5230" />
-          </mesh>
-          <mesh position={[0, 1.9, 0]} castShadow>
-            <sphereGeometry args={[0.95, 12, 12]} />
-            <meshStandardMaterial color="#3f8a35" />
-          </mesh>
-          <mesh position={[0.4, 1.5, 0.2]} castShadow>
-            <sphereGeometry args={[0.6, 10, 10]} />
-            <meshStandardMaterial color="#4a9c3d" />
-          </mesh>
-        </group>
-      ))}
-    </group>
-  );
 }

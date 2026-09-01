@@ -3,15 +3,45 @@
 export type PartName =
   | "body"
   | "head"
+  | "jaw"
   | "earL"
   | "earR"
+  // Each leg is a three-link chain: the hip/shoulder (legXX), the elbow or
+  // stifle (kneeXX) and the cannon bone (shinXX). Spreading the bend over three
+  // joints is what stops a walking cow looking like a table on hinges.
   | "legFL"
   | "legFR"
   | "legBL"
   | "legBR"
+  | "kneeFL"
+  | "kneeFR"
+  | "kneeBL"
+  | "kneeBR"
+  | "shinFL"
+  | "shinFR"
+  | "shinBL"
+  | "shinBR"
   | "tail"
+  | "tailTip"
   | "blush"
   | "brow";
+
+/** Every part name, in a fixed order — used to build the ref table in Cow.tsx. */
+export const PART_NAMES: PartName[] = [
+  "body", "head", "jaw", "earL", "earR",
+  "legFL", "legFR", "legBL", "legBR",
+  "kneeFL", "kneeFR", "kneeBL", "kneeBR",
+  "shinFL", "shinFR", "shinBL", "shinBR",
+  "tail", "tailTip", "blush", "brow",
+];
+
+/** The four legs, and the joint names that belong to each. */
+export const LEGS = [
+  { hip: "legFL", knee: "kneeFL", shin: "shinFL" },
+  { hip: "legFR", knee: "kneeFR", shin: "shinFR" },
+  { hip: "legBL", knee: "kneeBL", shin: "shinBL" },
+  { hip: "legBR", knee: "kneeBR", shin: "shinBR" },
+] as const;
 
 export interface PartPose {
   pos?: [number, number, number];

@@ -4,12 +4,13 @@ import { useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { cowState } from "@/lib/cowState";
-import { GATE_WIDTH, PIT_RADIUS } from "@/lib/world";
+import { bladeGeometry, loft, rng } from "@/lib/geometry";
+import { dirtMap, discFadeMap, groundBump, woodMap } from "@/lib/textures";
+import InstancedGroup, { type Placement } from "./Instanced";
+import { FENCE_HEIGHT, GATE_WIDTH, PIT_RADIUS } from "@/lib/world";
 
-const POSTS = 34;
-const RAIL_HEIGHTS = [0.42, 0.78];
-const WOOD = "#a9763f";
-const WOOD_DARK = "#7d5326";
+const POSTS = 40;
+const RAIL_HEIGHTS = [0.42, 0.82, 1.16];
 
 /** Half-angle of the gap the gate fills, at the +X side of the ring. */
 const GATE_HALF = GATE_WIDTH / 2 / PIT_RADIUS;
@@ -21,8 +22,69 @@ interface Segment {
   rotY: number;
 }
 
+function useFenceMaterials() {
+  return useMemo(() => {
+    const grain = woodMap();
+    return {
+      wood: new THREE.MeshStandardMaterial({ map: grain, roughness: 0.92, metalness: 0 }),
+      post: new THREE.MeshStandardMaterial({
+        map: grain,
+        color: "#b9a48a",
+        roughness: 0.95,
+        metalness: 0,
+      }),
+      iron: new THREE.MeshStandardMaterial({ color: "#4a4640", roughness: 0.5, metalness: 0.7 }),
+    };
+  }, []);
+}
+
+/**
+ * A post that was a tree once: it is not a box. The radius wanders up its length
+ * and the top is cut at a slant to shed rain, which is the detail that stops a
+ * ring of forty of them reading as a picket toy.
+ */
+const postGeo = (seed: number) => {
+  const r = rng(seed);
+  const rings = [];
+  for (let i = 0; i <= 6; i++) {
+    const t = i / 6;
+    const w = 0.075 * (1 - t * 0.18) * (0.9 + r() * 0.2);
+    rings.push({
+      z: t * FENCE_HEIGHT,
+      x: (r() - 0.5) * 0.018,
+      y: (r() - 0.5) * 0.018,
+      rx: w,
+      ry: w * (0.9 + r() * 0.2),
+    });
+  }
+  // Stood upright in the geometry rather than by a wrapper group, so an instance
+  // only ever needs one rotation and there is no order-of-composition to get wrong.
+  return loft(rings, { radial: 9, segments: 14, square: 0.35 }).rotateX(-Math.PI / 2);
+};
+
+/**
+ * A rail sags between its posts under its own weight.
+ *
+ * Turned to run along +X, because `rotY` for each fence segment is the tangent
+ * angle for a rail whoseaxis is X. Leave it along the loft's native +Z and
+ * every rail points at the middle of the pen instead of following the fence.
+ */
+const railGeo = (len: number) =>
+  loft(
+    [
+      { z: -len / 2, y: 0, rx: 0.055, ry: 0.048 },
+      { z: -len / 4, y: -0.012, rx: 0.05, ry: 0.045 },
+      { z: 0, y: -0.018, rx: 0.048, ry: 0.043 },
+      { z: len / 4, y: -0.012, rx: 0.05, ry: 0.045 },
+      { z: len / 2, y: 0, rx: 0.055, ry: 0.048 },
+    ],
+    { radial: 8, segments: 12, square: 0.7 }
+  ).rotateY(Math.PI / 2);
+
 export default function Pit() {
-  const { posts, rails } = useMemo(() => {
+  const mats = useFenceMaterials();
+
+  const { posts, rails, railLen } = useMemo(() => {
     const step = (Math.PI * 2) / POSTS;
     const postAngles: number[] = [];
     const railSegments: Segment[] = [];
@@ -46,44 +108,171 @@ export default function Pit() {
     return {
       posts: postAngles.map((a) => [Math.cos(a) * PIT_RADIUS, Math.sin(a) * PIT_RADIUS] as const),
       rails: railSegments,
+      railLen: 2 * PIT_RADIUS * Math.sin(step / 2) + 0.02,
     };
   }, []);
 
+  // Half a dozen post shapes, dealt out around the ring — enough that no two
+  // neighbours match, cheap enough to stay six geometries.
+  const postShapes = useMemo(() => [3, 17, 41, 59, 83, 101].map(postGeo), []);
+  const rail = useMemo(() => railGeo(railLen), [railLen]);
+  // No two neighbouring posts share a shape, a lean or a height, but there are
+  // still only six geometries and six draw calls.
+  const postItems = useMemo(() => {
+    const r = rng(555);
+    const buckets: Placement[][] = [[], [], [], [], [], []];
+    for (const [x, z] of posts) {
+      const lean = (r() - 0.5) * 0.09;
+      const twist = r() * Math.PI * 2;
+      const height = 0.92 + r() * 0.16;
+      const shape = Math.floor(r() * 6);
+      buckets[shape].push({
+        pos: [x, 0, z],
+        rot: [lean, twist, lean * 0.7],
+        scale: [1, height, 1],
+      });
+    }
+    return buckets;
+  }, [posts]);
+
+  const railItems = useMemo<Placement[]>(
+    () =>
+      rails.flatMap((seg) =>
+        RAIL_HEIGHTS.map((h) => ({
+          pos: [seg.x, h, seg.z] as [number, number, number],
+          rot: [0, seg.rotY, 0] as [number, number, number],
+        }))
+      ),
+    [rails]
+  );
+
   return (
     <group>
-      {/* the pen floor: a scuffed dirt ring the cow has already trodden flat */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.012, 0]} receiveShadow>
-        <circleGeometry args={[PIT_RADIUS, 64]} />
-        <meshStandardMaterial color="#87a05a" />
-      </mesh>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]} receiveShadow>
-        <ringGeometry args={[0, PIT_RADIUS * 0.55, 48]} />
-        <meshStandardMaterial color="#9b8a5e" />
-      </mesh>
+      <PenFloor />
 
-      {posts.map(([x, z], i) => (
-        <mesh key={i} position={[x, 0.5, z]} castShadow>
-          <boxGeometry args={[0.13, 1.0, 0.13]} />
-          <meshStandardMaterial color={WOOD_DARK} />
-        </mesh>
+      {/* One instanced batch per post shape, and one for all hundred-odd rails. */}
+      {postShapes.map((shape, k) => (
+        <InstancedGroup
+          key={k}
+          geometry={shape}
+          material={mats.post}
+          items={postItems[k]}
+          castShadow
+          receiveShadow
+        />
       ))}
+      <InstancedGroup
+        geometry={rail}
+        material={mats.wood}
+        items={railItems}
+        castShadow
+        receiveShadow
+      />
 
-      {rails.map((seg, i) =>
-        RAIL_HEIGHTS.map((h) => (
-          <mesh key={`${i}-${h}`} position={[seg.x, h, seg.z]} rotation={[0, seg.rotY, 0]} castShadow>
-            <boxGeometry args={[seg.len, 0.11, 0.06]} />
-            <meshStandardMaterial color={WOOD} />
-          </mesh>
-        ))
-      )}
-
+      <FenceWeeds />
       <Gate />
     </group>
   );
 }
 
+/**
+ * The pen floor: earth the cow has already trodden flat. It is laid over the
+ * field rather than replacing it, and its edge is dissolved by a ragged alpha
+ * mask, so the grass thins out into bare ground instead of stopping at a line.
+ */
+function PenFloor() {
+  const mat = useMemo(() => {
+    const m = new THREE.MeshStandardMaterial({
+      map: dirtMap(),
+      alphaMap: discFadeMap(),
+      bumpMap: groundBump(),
+      bumpScale: 0.25,
+      transparent: true,
+      roughness: 1,
+      depthWrite: false,
+    });
+    m.polygonOffset = true;
+    m.polygonOffsetFactor = -4;
+    return m;
+  }, []);
+
+  const worn = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: "#7d6446",
+        alphaMap: discFadeMap(),
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+      }),
+    []
+  );
+
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.014, 0]} material={mat} receiveShadow>
+        <planeGeometry args={[PIT_RADIUS * 1.95, PIT_RADIUS * 1.95]} />
+      </mesh>
+      {/* the middle, where she stands about the most */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0.6, 0.022, 0.4]} material={worn}>
+        <planeGeometry args={[PIT_RADIUS * 1.1, PIT_RADIUS * 1.1]} />
+      </mesh>
+    </group>
+  );
+}
+
+/**
+ * Grass survives right at the foot of a fence, where nothing can reach it. It is
+ * a small thing and it does more for the fence looking real than the fence does.
+ */
+function FenceWeeds() {
+  const geo = useMemo(() => bladeGeometry(0.42, 0.055, 0.14, 4), []);
+  const mat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.9,
+        side: THREE.DoubleSide,
+      }),
+    []
+  );
+  const matrices = useMemo(() => {
+    const r = rng(606);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const e = new THREE.Euler();
+    const pos = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const out: THREE.Matrix4[] = [];
+    for (let i = 0; i < 900; i++) {
+      const a = r() * Math.PI * 2;
+      if (Math.abs(Math.atan2(Math.sin(a), Math.cos(a))) < GATE_HALF * 1.4) continue;
+      const d = PIT_RADIUS + (r() - 0.45) * 0.5;
+      pos.set(Math.cos(a) * d, -0.01, Math.sin(a) * d);
+      e.set((r() - 0.5) * 0.5, r() * Math.PI * 2, (r() - 0.5) * 0.5);
+      q.setFromEuler(e);
+      scale.set(0.8 + r() * 0.5, 0.7 + r() * 0.8, 1);
+      out.push(m.clone().compose(pos, q, scale));
+    }
+    return out;
+  }, []);
+
+  return (
+    <instancedMesh
+      ref={(mesh) => {
+        if (!mesh) return;
+        matrices.forEach((mat4, i) => mesh.setMatrixAt(i, mat4));
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.frustumCulled = false;
+      }}
+      args={[geo, mat, matrices.length]}
+    />
+  );
+}
+
 /** The one way out. Swings open only when the cow decides it's had enough. */
 function Gate() {
+  const mats = useFenceMaterials();
   const gateRef = useRef<THREE.Group>(null);
   const hinge = useMemo(() => {
     const a = -GATE_HALF;
@@ -104,25 +293,39 @@ function Gate() {
   });
 
   const len = GATE_WIDTH;
+  const bar = useMemo(() => railGeo(len), [len]);
 
   return (
     <group ref={gateRef} position={[hinge.x, 0, hinge.z]} rotation={[0, hinge.rotY, 0]}>
-      <mesh position={[len / 2, 0.42, 0]} castShadow>
-        <boxGeometry args={[len, 0.11, 0.06]} />
-        <meshStandardMaterial color={WOOD} />
+      {RAIL_HEIGHTS.map((h) => (
+        <mesh key={h} geometry={bar} material={mats.wood} position={[len / 2, h, 0]} castShadow />
+      ))}
+      {/* diagonal brace, so it reads as a gate and not three floating planks */}
+      <mesh
+        position={[len / 2, (RAIL_HEIGHTS[0] + RAIL_HEIGHTS[2]) / 2, 0]}
+        rotation={[0, 0, Math.atan2(RAIL_HEIGHTS[2] - RAIL_HEIGHTS[0], len)]}
+        material={mats.wood}
+        castShadow
+      >
+        <boxGeometry args={[Math.hypot(len, RAIL_HEIGHTS[2] - RAIL_HEIGHTS[0]), 0.07, 0.05]} />
       </mesh>
-      <mesh position={[len / 2, 0.78, 0]} castShadow>
-        <boxGeometry args={[len, 0.11, 0.06]} />
-        <meshStandardMaterial color={WOOD} />
+      {/* stiles at each end */}
+      {[0.06, len - 0.06].map((x) => (
+        <mesh key={x} position={[x, 0.79, 0]} material={mats.post} castShadow>
+          <boxGeometry args={[0.1, 0.9, 0.09]} />
+        </mesh>
+      ))}
+      {/* hinge straps and a latch, because the eye goes straight to them */}
+      {[RAIL_HEIGHTS[0], RAIL_HEIGHTS[2]].map((h) => (
+        <mesh key={h} position={[0.16, h, 0.05]} material={mats.iron}>
+          <boxGeometry args={[0.3, 0.04, 0.012]} />
+        </mesh>
+      ))}
+      <mesh position={[len - 0.02, RAIL_HEIGHTS[1], 0.06]} material={mats.iron}>
+        <boxGeometry args={[0.22, 0.035, 0.012]} />
       </mesh>
-      {/* diagonal brace, so it reads as a gate and not a floating plank */}
-      <mesh position={[len / 2, 0.6, 0]} rotation={[0, 0, Math.atan2(0.36, len)]} castShadow>
-        <boxGeometry args={[Math.hypot(len, 0.36), 0.07, 0.05]} />
-        <meshStandardMaterial color={WOOD} />
-      </mesh>
-      <mesh position={[len - 0.05, 0.6, 0]} castShadow>
-        <boxGeometry args={[0.1, 0.85, 0.1]} />
-        <meshStandardMaterial color={WOOD_DARK} />
+      <mesh position={[len + 0.04, RAIL_HEIGHTS[1] + 0.02, 0.06]} material={mats.iron}>
+        <cylinderGeometry args={[0.018, 0.018, 0.14, 8]} />
       </mesh>
     </group>
   );

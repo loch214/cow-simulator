@@ -28,35 +28,60 @@ export const LIP_MARK_DURATION = 4500;
 // is keyframed is the rest of the body: the shoulder turn and the raised hoof.
 const GLARE_AND_FLIP: Pose = {
   body: { rot: [0, 0.12, 0] },
-  legFR: { rot: [-2.4, 0, 0.5] },
+  // A hoof does not come up by swinging the whole leg out straight — the
+  // shoulder lifts, the knee folds under it, and the cannon hangs.
+  legFR: { rot: [-1.15, 0, 0.34] },
+  kneeFR: { rot: [-0.55, 0, 0] },
+  shinFR: { rot: [0.5, 0, 0] },
 };
 
 // Grazing keeps all four hooves down — the cow only ever rears up when it's
 // storming off to the police station.
+/**
+ * Head right down in the grass. The numbers are measured rather than eyeballed:
+ * pitched 1.15 rad and dropped 0.40, the muzzle sits a few centimetres off the
+ * ground at the bottom of each dip — in the grass, not through it. The neck is
+ * not keyframed at all — it is drawn
+ * between the chest and wherever the head ended up (see `stretchNeck`), so it
+ * reaches down of its own accord.
+ */
 const headDown = (dip: number): Pose => ({
-  head: { rot: [0.9, 0, 0], pos: [0, -0.4 - dip, 0.14] },
-  earL: { rot: [-0.35, 0, 0] },
-  earR: { rot: [-0.35, 0, 0] },
-  body: { pos: [0, -0.03, 0.06] },
+  head: { rot: [1.15, 0, 0], pos: [0, -0.46 - dip, 0.03] },
+  // ears go out sideways and down, the way they do when a cow has its head in
+  // something it likes
+  earL: { rot: [-0.15, 0, 0.45] },
+  earR: { rot: [-0.15, 0, -0.45] },
+  jaw: { rot: [0.12, 0, 0] },
+  // weight forward onto the front legs
+  body: { pos: [0, -0.035, 0.05], rot: [0.045, 0, 0] },
+  legFL: { rot: [0.12, 0, 0] },
+  legFR: { rot: [0.12, 0, 0] },
 });
 
 const BLUSH: Pose = { blush: { scale: [1, 1, 1] } };
 
 /** Looking away, hooves shuffling. */
 const COY: Pose = {
-  head: { rot: [0.3, 0.34, 0], pos: [0, -0.06, 0] },
-  earL: { rot: [-0.42, 0, 0] },
-  earR: { rot: [-0.42, 0, 0] },
-  body: { pos: [0, 0, -0.16] },
+  head: { rot: [0.34, 0.42, -0.12], pos: [0, -0.07, -0.03] },
+  earL: { rot: [-0.42, 0, 0.25] },
+  earR: { rot: [-0.42, 0, -0.25] },
+  body: { pos: [0, 0, -0.2], rot: [0, 0.06, 0] },
+  tail: { rot: [0, 0.5, 0] },
+  tailTip: { rot: [0, 0.6, 0] },
   blush: { scale: [1, 1, 1] },
 };
 
 /** The wind-up: weight back on the hind legs, chin coming up. */
 const WIND_UP: Pose = {
-  head: { rot: [-0.26, 0, 0], pos: [0, 0.06, 0] },
+  head: { rot: [-0.3, 0, 0], pos: [0, 0.08, -0.04] },
   earL: { rot: [-0.1, 0, 0] },
   earR: { rot: [-0.1, 0, 0] },
-  body: { pos: [0, 0.02, -0.34], rot: [-0.06, 0, 0] },
+  body: { pos: [0, 0.02, -0.38], rot: [-0.09, 0, 0] },
+  // coiled: the hind legs load up before the launch
+  legBL: { rot: [0.3, 0, 0] },
+  legBR: { rot: [0.3, 0, 0] },
+  kneeBL: { rot: [-0.3, 0, 0] },
+  kneeBR: { rot: [-0.3, 0, 0] },
   blush: { scale: [1, 1, 1] },
 };
 
@@ -65,12 +90,16 @@ const WIND_UP: Pose = {
  * against glass, and the front hooves come up either side of it.
  */
 const PUCKER: Pose = {
-  head: { rot: [-0.12, 0, 0], pos: [0, 0, 0], scale: [0.14, -0.06, -0.1] },
-  earL: { rot: [-0.5, 0, -0.2] },
-  earR: { rot: [-0.5, 0, 0.2] },
+  head: { rot: [-0.14, 0, 0], pos: [0, 0, 0], scale: [0.18, -0.08, -0.12] },
+  jaw: { rot: [-0.1, 0, 0] },
+  earL: { rot: [-0.55, 0, -0.3] },
+  earR: { rot: [-0.55, 0, 0.3] },
   body: { pos: [0, 0, 0] },
-  legFL: { rot: [-1.35, 0, -0.55] },
-  legFR: { rot: [-1.35, 0, 0.55] },
+  // front hooves come up either side of the lens
+  legFL: { rot: [-1.5, 0, -0.5] },
+  legFR: { rot: [-1.5, 0, 0.5] },
+  kneeFL: { rot: [-0.7, 0, 0] },
+  kneeFR: { rot: [-0.7, 0, 0] },
   blush: { scale: [1, 1, 1] },
 };
 

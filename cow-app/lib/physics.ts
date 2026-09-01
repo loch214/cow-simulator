@@ -55,7 +55,9 @@ export const cowPhysics = {
   shoveZ: makeSpring(190, 15),
   /** Bank into a turn, plus whatever an impact adds. */
   lean: makeSpring(90, 13),
+  /** The tail is two links: the tip is a slower, floppier spring chasing the base. */
   tail: makeSpring(55, 5),
+  tailTip: makeSpring(34, 3.4),
   earL: makeSpring(120, 7),
   earR: makeSpring(120, 7),
 };
@@ -66,14 +68,18 @@ const ANGER_FADE = 7;
 export function slapImpulse() {
   const p = cowPhysics;
   // Struck on its left cheek: the head snaps to the cow's right and rolls with it.
-  kickSpring(p.headYaw, -9);
-  kickSpring(p.headRoll, -11);
-  kickSpring(p.headPitch, -3.5);
-  kickSpring(p.shoveX, 2.2);
-  kickSpring(p.shoveZ, -1.1);
-  kickSpring(p.lean, -1.6);
+  // The head now sits on the end of a real neck, so the same impulse throws it
+  // through a much longer arc — these are lower than they look.
+  kickSpring(p.headYaw, -7.5);
+  kickSpring(p.headRoll, -9);
+  kickSpring(p.headPitch, -3);
+  // Half a tonne does not get knocked sideways; it rocks and plants itself.
+  kickSpring(p.shoveX, 1.5);
+  kickSpring(p.shoveZ, -0.8);
+  kickSpring(p.lean, -1.4);
   kickSpring(p.earL, 7);
   kickSpring(p.earR, 5);
+  kickSpring(p.tail, 3.5);
   cowState.anger = 1;
 }
 
@@ -120,6 +126,8 @@ export function stepCowPhysics(dt: number): Pose {
 
   // The tail is a pendulum: it trails the turn and flicks when the cow is cross.
   const tail = stepSpring(p.tail, -turn * 0.18 + Math.sin(t * 7) * 0.35 * anger, dt);
+  // The tip chases the base, so the whole tail cracks rather than swinging rigid.
+  const tailTip = stepSpring(p.tailTip, tail, dt);
 
   // Ears are floppy, and pin backwards while the cow is angry.
   const earBack = -0.34 * anger;
@@ -133,6 +141,7 @@ export function stepCowPhysics(dt: number): Pose {
     },
     head: { rot: [headPitch, headYaw, headRoll] },
     tail: { rot: [0, tail, 0] },
+    tailTip: { rot: [0, tailTip * 0.8, 0] },
     earL: { rot: [earL, 0, 0] },
     earR: { rot: [earR, 0, 0] },
     // The brows are scaled to nothing at rest, so anger just fades them in.
