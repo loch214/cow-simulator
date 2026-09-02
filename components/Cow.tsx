@@ -1128,7 +1128,7 @@ export default function Cow() {
     if (!started) {
       cowState.speed = 0;
       cowState.stand = danceK.current;
-      pose = dancePose(now, danceK.current);
+      pose = dancePose(now, dt, danceK.current);
     } else if (inCutscene && runnerRef.current) {
       const result = stepCutscene(runnerRef.current, dt);
       if (result.say !== undefined) {
@@ -1178,7 +1178,7 @@ export default function Cow() {
       // play rather than dropping it.
       if (danceK.current > 0.001) {
         cowState.stand = danceK.current;
-        pose = addPose(pose, dancePose(now, danceK.current));
+        pose = addPose(pose, dancePose(now, dt, danceK.current));
       }
     }
 

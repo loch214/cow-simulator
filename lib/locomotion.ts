@@ -328,13 +328,13 @@ export function standPose(k: number): Pose {
  * on what the legs are doing, which is what lets the bipedal walk solve against
  * the ground the same way the quadruped one does.
  */
-const STAND_HIP_Y =
+export const STAND_HIP_Y =
   STAND_LIFT +
   BACK_RIG.hipY * Math.cos(STAND_TILT) -
   BACK_RIG.hipZ * Math.sin(STAND_TILT);
 
 /** The hind-leg angles baked into `standPose` at k = 1, to measure the walk against. */
-const STAND_HIND = {
+export const STAND_HIND = {
   hip: -STAND_TILT * 0.62 - 0.1,
   knee: 0.34,
   shin: 0.3,
