@@ -237,8 +237,12 @@ export function hideMap(): THREE.Texture {
 }
 
 /**
- * The head is painted deliberately: a dark cap over the poll and one eye, the
- * classic asymmetric Holstein face. `v` runs muzzle (0) to poll (1).
+ * The head is painted deliberately: a dark cap over the poll, a patch over one
+ * eye, and the classic pale blaze down the middle of the face.
+ *
+ * **`v` runs poll (0) to nose (1)**, because that is the order `skullGeo`'s
+ * rings are listed in. This was upside down for a while and put the Holstein cap
+ * on the cow's nose, which is a hard thing to unsee once you have spotted it.
  */
 export function headMap(): THREE.Texture {
   return make("head", 384, (ctx, s) => {
@@ -248,12 +252,85 @@ export function headMap(): THREE.Texture {
       return mix(HIDE_CREAM, HIDE_SHADOW, n * 0.5);
     });
     ctx.fillStyle = `rgb(${HIDE_BLACK.join(",")})`;
-    // cap over the top of the skull
-    tiledBlob(ctx, s, 0.5 * s, 0.9 * s, 0.3 * s, 211, 0.3);
-    // patch around the cow's left eye
-    tiledBlob(ctx, s, 0.72 * s, 0.55 * s, 0.16 * s, 227, 0.5);
+    // cap over the poll and down the back of the ears
+    tiledBlob(ctx, s, 0.5 * s, 0.06 * s, 0.28 * s, 211, 0.3);
+    // patch over the cow's left eye and cheek
+    tiledBlob(ctx, s, 0.72 * s, 0.4 * s, 0.17 * s, 227, 0.5);
     // a fleck on the other cheek so the face is not symmetrical
-    tiledBlob(ctx, s, 0.2 * s, 0.42 * s, 0.06 * s, 233, 0.6);
+    tiledBlob(ctx, s, 0.22 * s, 0.34 * s, 0.07 * s, 233, 0.6);
+
+    // The blaze: a pale stripe straight down the front of the face, painted back
+    // over the patches. Without it a spotted head reads as a random mess rather
+    // than a face, because there is nothing running along the axis of symmetry.
+    const grad = ctx.createLinearGradient(0, 0, s, 0);
+    grad.addColorStop(0.34, "rgba(246,242,233,0)");
+    grad.addColorStop(0.46, "rgba(246,242,233,0.95)");
+    grad.addColorStop(0.54, "rgba(246,242,233,0.95)");
+    grad.addColorStop(0.66, "rgba(246,242,233,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, s, s * 0.82);
+
+    // A narrow band of dark skin right where the muzzle pad comes through, so
+    // the pad is framed in lip rather than stuck onto white hair.
+    //
+    // The band is narrow because the pad already covers everything past v≈0.93:
+    // an earlier version started this gradient at v=0.7 and painted the entire
+    // bridge of the nose grey, which turned the head into a snout.
+    const muzzle = ctx.createLinearGradient(0, s * 0.86, 0, s);
+    muzzle.addColorStop(0, "rgba(64,54,50,0)");
+    muzzle.addColorStop(1, "rgba(64,54,50,0.6)");
+    ctx.fillStyle = muzzle;
+    ctx.fillRect(0, s * 0.86, s, s * 0.14);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// the cow's legs
+//
+// Two maps, and the split is the whole point: **both of them are cream at the
+// knee**. The upper leg only darkens right at the top, where the shoulder or
+// the haunch is covering it anyway, so the material changes at a joint where
+// the two sides already match and the seam has nothing to show. Give the upper
+// leg the hide's patches instead — the obvious thing to do — and you get a
+// white pipe plugged into a spotted boot, which is what the first pass was.
+//
+// `v` runs 0 at the joint to 1 at the far end of the bone, because that is the
+// direction `boneGeo` lofts.
+// ---------------------------------------------------------------------------
+
+const LEG_CREAM = [238, 233, 222];
+const LEG_SHADOW = [206, 198, 182];
+
+/** Cream, with the hair grain and a little dirt low down. Knee and cannon. */
+export function legMap(): THREE.Texture {
+  return make("leg", 192, (ctx, s) => {
+    const hair = fbm(30, 4, 151);
+    const grime = fbm(7, 3, 157);
+    const dirt = [148, 128, 100];
+    paint(ctx, s, (u, v) => {
+      const col = mix(LEG_CREAM, LEG_SHADOW, hair(u, v) * 0.5);
+      // Splashed up from the field, heaviest at the fetlock. Kept faint: any
+      // more and the dirt reads as a sock rather than as dirt.
+      const mud = Math.max(0, v - 0.68) * 1.4 * Math.max(0, grime(u, v) - 0.42) * 1.5;
+      return mix(col, dirt, Math.min(0.26, mud));
+    });
+  });
+}
+
+/**
+ * The same cream, shading into the coat only at the very top of the bone, which
+ * is buried inside the shoulder or the haunch. Everything you can actually see
+ * of this bone matches the one below it.
+ */
+export function upperLegMap(): THREE.Texture {
+  return make("upperLeg", 192, (ctx, s) => {
+    const hair = fbm(30, 4, 163);
+    const shade = [198, 190, 174];
+    paint(ctx, s, (u, v) => {
+      const col = mix(LEG_CREAM, LEG_SHADOW, hair(u, v) * 0.5);
+      // a soft darkening into the shadow of the body above, top 22% only
+      return mix(col, shade, Math.max(0, 1 - v / 0.22) * 0.55);
+    });
   });
 }
 

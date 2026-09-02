@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { ensureAudio, smack, moo, chew, kissJingle, grunt } from "./audio";
-import { gags, insultLines, LIP_MARK_DURATION } from "./reactions";
+import { gags, insultLines, LIP_MARK_DURATION, SLAP_IMPACT } from "./reactions";
 import { kissImpulse, slapImpulse } from "./physics";
 import { addShake } from "./camera";
 import { GRASS, REGROW_MS, SLAPS_BEFORE_POLICE } from "./world";
@@ -20,6 +20,12 @@ export interface CowStore {
   /** Bumped on every kiss so the overlay replays its animation from the top. */
   lipMarkSeq: number;
   slapCount: number;
+  /**
+   * When the slapping hand started its swing, as `performance.now()`. A
+   * timestamp rather than a flag, so a second slap restarts the swing from the
+   * top instead of being swallowed while the first one is still in the air.
+   */
+  slapAt: number;
   /** Timestamp each grass tuft was eaten, or null if it's standing. */
   grassEatenAt: (number | null)[];
   /** Id of the grass tuft the cow is close enough to eat, if any. */
@@ -66,6 +72,7 @@ export const useCowStore = create<CowStore>((set, get) => {
     showLipMark: false,
     lipMarkSeq: 0,
     slapCount: 0,
+    slapAt: 0,
     grassEatenAt: GRASS.map(() => null),
     nearGrass: null,
 
@@ -106,20 +113,33 @@ export const useCowStore = create<CowStore>((set, get) => {
       const gag = gags[id];
       const slapCount = id === "slap" ? get().slapCount + 1 : get().slapCount;
 
-      // The hit itself is physics, not animation: the head is thrown by a spring
-      // and the camera takes a knock with it. Both happen on the same frame as
-      // the crack, whether or not the cow then storms off.
+      // Fifth slap: the cow stops arguing and goes over your head. It still gets
+      // hit first — the hand is already in the air — so the impact is scheduled
+      // the same way and the cutscene starts on the back of it.
+      const lastStraw = id === "slap" && slapCount >= SLAPS_BEFORE_POLICE;
+
       if (id === "slap") {
-        slapImpulse();
-        addShake(0.55);
+        // The swing starts now; everything the blow does happens when the hand
+        // gets there. The hit itself is physics, not animation: the head is
+        // thrown by a spring and the camera takes a knock with it.
+        set({ slapAt: performance.now() });
+        const impact = setTimeout(() => {
+          slapImpulse();
+          addShake(0.55);
+          if (lastStraw) {
+            smack();
+            grunt();
+            // Let the head-whip actually play before the cutscene takes the body
+            // over — `startCutscene` relaxes every spring, so starting it on the
+            // same frame as the impulse would wipe the hit off the cow.
+            timeouts.push(setTimeout(() => get().startCutscene(), 430));
+          }
+        }, SLAP_IMPACT);
+        timeouts.push(impact);
       }
 
-      // Fifth slap: the cow stops arguing and goes over your head.
-      if (id === "slap" && slapCount >= SLAPS_BEFORE_POLICE) {
+      if (lastStraw) {
         set({ activeGag: null, dialogue: null, showLipMark: false, slapCount });
-        smack();
-        grunt();
-        get().startCutscene();
         return;
       }
 

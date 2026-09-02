@@ -23,16 +23,83 @@ export interface GagDef {
 /** ms the lip mark stays stuck to the screen once the cow plants it. */
 export const LIP_MARK_DURATION = 4500;
 
-// Slap: the head is NOT keyframed. It's thrown by a spring in lib/physics.ts so
-// the whip and the wobble that follows are real motion, not a canned curve. What
-// is keyframed is the rest of the body: the shoulder turn and the raised hoof.
-const GLARE_AND_FLIP: Pose = {
-  body: { rot: [0, 0.12, 0] },
-  // A hoof does not come up by swinging the whole leg out straight — the
-  // shoulder lifts, the knee folds under it, and the cannon hangs.
-  legFR: { rot: [-1.15, 0, 0.34] },
-  kneeFR: { rot: [-0.55, 0, 0] },
-  shinFR: { rot: [0.5, 0, 0] },
+/**
+ * How long the slapping hand takes to reach the cheek, in ms.
+ *
+ * Everything about a slap — the head-spring kick, the camera shake, the crack —
+ * used to happen on the frame you pressed the button, which left the hand in
+ * `components/Hands.tsx` no time to travel and made the impact read as a hiccup
+ * rather than a hit. Now the swing starts on the button and the impact lands
+ * here, and every one of those four things is scheduled off this one number.
+ */
+export const SLAP_IMPACT = 190;
+
+/**
+ * Head snapped aside and the whole body rocked back off the blow.
+ *
+ * The body drop is small on purpose: the legs are rigid here, so every
+ * centimetre it sinks is a centimetre of hoof buried in the field.
+ */
+const RECOIL: Pose = {
+  body: { pos: [0, -0.008, -0.07], rot: [0.035, -0.06, 0] },
+  // braced: it plants the near foreleg and takes the weight on it
+  legFL: { rot: [0.18, 0, 0] },
+  kneeFL: { rot: [-0.14, 0, 0] },
+  legBL: { rot: [-0.1, 0, 0] },
+  legBR: { rot: [-0.1, 0, 0] },
+  earL: { rot: [-0.5, 0, 0.3] },
+  earR: { rot: [-0.5, 0, -0.3] },
+};
+
+/**
+ * The reply. The head is NOT keyframed here — it is thrown by a spring in
+ * lib/physics.ts, so the whip and the wobble that follows are real motion rather
+ * than a canned curve. What *is* keyframed is everything else: the cow squares
+ * its shoulders, brings its front-right leg up in front of its chest, and the
+ * hoof on the end of it turns out to be a hand.
+ *
+ * The arm is raised the way an arm is raised — the shoulder lifts, the elbow
+ * folds under it and the forearm comes up vertical — rather than by swinging the
+ * whole leg out straight, which reads as a cow falling over.
+ *
+ * `fist` is scaled to nothing everywhere else in the game; this is the only pose
+ * that grows it. `Cow.tsx` hides the hoof for exactly as long as it is out.
+ */
+const FLIP_OFF: Pose = {
+  // No lift: three hooves are still carrying this cow, and raising the body here
+  // would take all three of them off the ground together.
+  body: { rot: [0, 0.1, 0], pos: [0, -0.006, -0.05] },
+  legFR: { rot: [-1.46, 0, 0.5] },
+  kneeFR: { rot: [-1.05, 0, 0] },
+  shinFR: { rot: [1.22, 0, 0] },
+  fist: { scale: [1, 1, 1] },
+  // the far foreleg takes the weight the raised one is no longer carrying
+  legFL: { rot: [0.1, 0, 0] },
+  // chin up, ears pinned back: this is not an apology
+  head: { rot: [-0.12, 0, 0] },
+  earL: { rot: [-0.62, 0, 0.18] },
+  earR: { rot: [-0.62, 0, -0.18] },
+  tail: { rot: [-0.2, 0, 0] },
+};
+
+/**
+ * Halfway through raising the arm, and still holding a hoof.
+ *
+ * This keyframe exists purely so the hoof-for-hand swap happens somewhere it
+ * cannot be seen. The swap is a hard cut — `aimFist` shows one or the other,
+ * never both — so it has to land while the leg is at the top of its swing and
+ * moving fast, not while the foot is still on the ground. Leaving `fist` out of
+ * this pose keeps it scaled to nothing until the last 140 ms of the lift.
+ */
+const ARM_UP: Pose = {
+  body: { rot: [0, 0.06, 0], pos: [0, -0.004, -0.04] },
+  legFR: { rot: [-1.0, 0, 0.34] },
+  kneeFR: { rot: [-0.86, 0, 0] },
+  shinFR: { rot: [0.92, 0, 0] },
+  legFL: { rot: [0.08, 0, 0] },
+  head: { rot: [-0.08, 0, 0] },
+  earL: { rot: [-0.5, 0, 0.14] },
+  earR: { rot: [-0.5, 0, -0.14] },
 };
 
 // Grazing keeps all four hooves down — the cow only ever rears up when it's
@@ -187,18 +254,23 @@ export const gags: Record<string, GagDef> = {
 
   slap: {
     id: "slap",
-    duration: 2000,
+    duration: 2600,
     keyframes: [
+      // Nothing happens until the hand actually arrives. The cow is standing
+      // there, unaware, for the whole of the wind-up.
       { t: 0, pose: {} },
-      { t: 120, pose: { body: { pos: [0, 0, -0.05] } } },
-      { t: 620, pose: GLARE_AND_FLIP },
-      { t: 1650, pose: GLARE_AND_FLIP },
-      { t: 1950, pose: {} },
+      { t: SLAP_IMPACT, pose: {} },
+      { t: SLAP_IMPACT + 90, pose: RECOIL },
+      { t: SLAP_IMPACT + 320, pose: RECOIL },
+      { t: 780, pose: ARM_UP },
+      { t: 900, pose: FLIP_OFF },
+      { t: 2200, pose: FLIP_OFF },
+      { t: 2550, pose: {} },
     ],
     script: [
-      { t: 0, sound: "smack" },
-      { t: 90, sound: "grunt" },
-      { t: 650, dynamicSay: true },
+      { t: SLAP_IMPACT, sound: "smack" },
+      { t: SLAP_IMPACT + 90, sound: "grunt" },
+      { t: 980, dynamicSay: true },
     ],
   },
 };
@@ -210,4 +282,7 @@ export const insultLines = [
   "Do that again, I dare you.",
   "Wow. Okay.",
   "That's assault.",
+  "Guess what this is.",
+  "Yeah. Read it and weep.",
+  "Bet you thought I didn't have one of these.",
 ];

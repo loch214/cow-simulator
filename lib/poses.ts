@@ -24,7 +24,10 @@ export type PartName =
   | "tail"
   | "tailTip"
   | "blush"
-  | "brow";
+  | "brow"
+  // The hand on the end of the front-right leg. Scaled to nothing at rest and
+  // grown to full size for exactly one gag; see `flipOff` in lib/reactions.ts.
+  | "fist";
 
 /** Every part name, in a fixed order — used to build the ref table in Cow.tsx. */
 export const PART_NAMES: PartName[] = [
@@ -32,7 +35,7 @@ export const PART_NAMES: PartName[] = [
   "legFL", "legFR", "legBL", "legBR",
   "kneeFL", "kneeFR", "kneeBL", "kneeBR",
   "shinFL", "shinFR", "shinBL", "shinBR",
-  "tail", "tailTip", "blush", "brow",
+  "tail", "tailTip", "blush", "brow", "fist",
 ];
 
 /** The four legs, and the joint names that belong to each. */
