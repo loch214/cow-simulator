@@ -149,7 +149,17 @@ export function attachLook(el: HTMLElement): () => void {
     if (e.pointerType === "touch") markTouch();
     // Any press on the field hands the mouse straight to the game.
     if (e.pointerType === "mouse") requestLock();
-    el.setPointerCapture?.(e.pointerId);
+    // Capturing is only worth it for a drag we have to keep following off the
+    // canvas. Under pointer lock there is no cursor to capture and the browser
+    // throws InvalidStateError, and a mouse button released outside the window
+    // can leave the id already dead — so this is guarded on both sides.
+    if (!cam.locked && el.hasPointerCapture && !el.hasPointerCapture(e.pointerId)) {
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // pointer already gone; the drag map below still tracks it fine
+      }
+    }
     drags.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (drags.size === 2) {
       pinchDist = twoFingerDistance(drags);

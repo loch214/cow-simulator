@@ -23,16 +23,62 @@ const NAVY = "#22335e";
 const NAVY_DARK = "#161f3a";
 const HI_VIS = "#d8e24a";
 
-/** A tapered limb segment, built along +z and swung down by its parent group. */
+/**
+ * A tapered limb segment, built along +z and swung down by its parent group.
+ *
+ * Both ends are domed and run `LIMB_OVER` past the joint they hang off. Two
+ * flat-capped tubes butted together show the ring where they meet and pull
+ * apart into a visible gap the moment the joint bends — which is what made him
+ * look assembled rather than modelled. See `joint` below for the other half of
+ * the fix.
+ */
+const LIMB_OVER = 0.035;
+
 const limb = (len: number, top: number, waist: number, bottom: number) =>
   loft(
     [
+      { z: -LIMB_OVER, rx: top * 0.44, ry: top * 0.4 },
       { z: 0, rx: top, ry: top * 0.92 },
-      { z: len * 0.32, rx: waist * 1.06, ry: waist },
+      { z: len * 0.2, rx: waist * 1.06, ry: waist },
+      { z: len * 0.48, rx: waist, ry: waist * 0.95 },
       { z: len * 0.78, rx: waist * 0.86, ry: waist * 0.82 },
       { z: len, rx: bottom, ry: bottom * 0.9 },
+      { z: len + LIMB_OVER, rx: bottom * 0.44, ry: bottom * 0.4 },
     ],
-    { radial: 12, segments: 14 }
+    { radial: 14, segments: 26 }
+  );
+
+/**
+ * The swelling at an elbow, a knee or a shoulder: fatter than both the limb
+ * above it and the limb below, so it swallows the two domed ends meeting inside
+ * it and the join has nowhere to show.
+ */
+const joint = (r: number, above = 0.045, below = 0.05) =>
+  loft(
+    [
+      { z: -above, rx: r * 0.32, ry: r * 0.3 },
+      { z: -above * 0.55, rx: r * 0.78, ry: r * 0.74 },
+      { z: below * 0.2, rx: r, ry: r * 0.95 },
+      { z: below * 0.62, rx: r * 0.84, ry: r * 0.8 },
+      { z: below, rx: r * 0.34, ry: r * 0.32 },
+    ],
+    { radial: 14, segments: 20 }
+  );
+
+/**
+ * A hand, closed round whatever it is holding. A box read as a block of wood on
+ * the end of a stick; this is at least knuckled.
+ */
+const fistGeo = () =>
+  loft(
+    [
+      { z: -0.03, y: 0, rx: 0.03, ry: 0.033 },
+      { z: 0.01, y: -0.004, rx: 0.042, ry: 0.046 },
+      { z: 0.055, y: -0.008, rx: 0.046, ry: 0.05 },
+      { z: 0.095, y: -0.004, rx: 0.041, ry: 0.045 },
+      { z: 0.125, y: 0.004, rx: 0.024, ry: 0.028 },
+    ],
+    { radial: 14, segments: 18, square: 0.4 }
   );
 
 /**
@@ -110,6 +156,16 @@ const officerGeo = {
   foreArm: () => limb(0.25, 0.066, 0.06, 0.05),
   thigh: () => limb(THIGH, 0.128, 0.115, 0.082),
   shin: () => limb(SHIN, 0.084, 0.07, 0.058),
+  /**
+   * Deltoid, elbow, knee. Each is a little wider than the limbs meeting inside
+   * it and no more. Overdo this and the swelling stops covering the seam and
+   * starts being one: the joint's own silhouette cuts across the arm, and a ball
+   * with a step down to a tube is exactly the look this was meant to remove.
+   */
+  shoulderCap: () => joint(0.094, 0.06, 0.09),
+  elbow: () => joint(0.069, 0.05, 0.055),
+  knee: () => joint(0.091, 0.055, 0.06),
+  fist: () => fistGeo(),
 };
 
 /** The doughnut. Not a full torus: there is a bite out of it. */
@@ -195,6 +251,10 @@ export default function Officer() {
       foreArm: officerGeo.foreArm(),
       thigh: officerGeo.thigh(),
       shin: officerGeo.shin(),
+      shoulderCap: officerGeo.shoulderCap(),
+      elbow: officerGeo.elbow(),
+      knee: officerGeo.knee(),
+      fist: officerGeo.fist(),
       nose: lumpGeometry(1717, 0.036, 0.14, 1),
       donut: donutGeo(),
     }),
@@ -292,11 +352,13 @@ export default function Officer() {
     if (padArmRef.current) {
       padArmRef.current.rotation.x = inCutscene ? -0.72 + Math.sin(t * 1.1) * 0.05 : -0.12;
       // The arm cannot hang straight; there is a stomach in the way. This has to
-      // clear a gut half a metre across, so it is a lot more than it looks.
-      padArmRef.current.rotation.z = inCutscene ? -0.52 : -0.4;
+      // clear a gut half a metre across, so it is a lot more than it looks — and
+      // it is POSITIVE on the arm at +x, because a positive z tilt on a limb
+      // hanging down carries it towards +x, i.e. away from him.
+      padArmRef.current.rotation.z = inCutscene ? 0.38 : 0.4;
     }
     if (padForeRef.current) {
-      padForeRef.current.rotation.x = inCutscene ? -1.05 + scribble : -0.42;
+      padForeRef.current.rotation.x = inCutscene ? -1.15 + scribble : -0.75;
     }
 
     // The other hand has a doughnut in it and its priorities are clear: it goes
@@ -304,10 +366,12 @@ export default function Officer() {
     // gesture, and it does not stop for the cow.
     if (foodArmRef.current) {
       foodArmRef.current.rotation.x = -0.34 - bite * 0.85;
-      foodArmRef.current.rotation.z = 0.5 - bite * 0.2;
+      // Mirrored, so negative is out. Taking a bite brings it back IN towards
+      // the mouth, which is why the bite term moves it the other way.
+      foodArmRef.current.rotation.z = -0.5 + bite * 0.22;
     }
     if (foodForeRef.current) {
-      foodForeRef.current.rotation.x = -0.55 - bite * 1.15;
+      foodForeRef.current.rotation.x = -0.95 - bite * 0.8;
       foodForeRef.current.rotation.z = bite * 0.35;
     }
 
@@ -356,6 +420,7 @@ export default function Officer() {
               </group>
               <group position={[0, -THIGH, 0]} rotation={[SHIN_TILT, 0, 0]}>
                 <group rotation={down}>
+                  <mesh geometry={geo.knee} material={mats.trouser} castShadow />
                   <mesh geometry={geo.shin} material={mats.trouser} castShadow />
                 </group>
                 {/* the boot undoes the leg's net angle, so the sole lands flat */}
@@ -414,41 +479,52 @@ export default function Officer() {
               <cylinderGeometry args={[0.006, 0.006, 0.09, 6]} />
             </mesh>
 
-            {/* notepad arm */}
-            <group ref={padArmRef} position={[0.255, 0.58, 0]} rotation={[-0.12, 0, -0.4]}>
+            {/*
+              Both arms. The shoulders sit OUTSIDE the widest ring of the torso
+              (0.278) rather than inside it, and each arm then swings further out
+              still — there is a gut half a metre across between them and neither
+              hand has anywhere to be except clear of it. Getting the sign of that
+              swing backwards is what buried the notepad in his chest and the
+              doughnut in his stomach.
+            */}
+            <group ref={padArmRef} position={[0.3, 0.585, 0.01]} rotation={[-0.12, 0, 0.4]}>
               <group rotation={down}>
+                <mesh geometry={geo.shoulderCap} material={mats.shirt} castShadow />
                 <mesh geometry={geo.upperArm} material={mats.shirt} castShadow />
               </group>
-              <group ref={padForeRef} position={[0, -0.27, 0]} rotation={[-0.42, 0, 0]}>
+              <group ref={padForeRef} position={[0, -0.27, 0]} rotation={[-0.75, 0, 0]}>
                 <group rotation={down}>
+                  <mesh geometry={geo.elbow} material={mats.shirt} castShadow />
                   <mesh geometry={geo.foreArm} material={mats.shirt} castShadow />
                 </group>
-                <mesh position={[0, -0.28, 0.012]} material={mats.skin} castShadow>
-                  <boxGeometry args={[0.075, 0.11, 0.1]} />
-                </mesh>
-                <mesh position={[0, -0.31, 0.085]} rotation={[0.55, 0, 0]} material={mats.paper}>
+                <group position={[0, -0.255, 0.01]} rotation={down}>
+                  <mesh geometry={geo.fist} material={mats.skin} castShadow />
+                </group>
+                <mesh position={[0, -0.315, 0.085]} rotation={[0.55, 0, 0]} material={mats.paper}>
                   <boxGeometry args={[0.16, 0.21, 0.012]} />
                 </mesh>
-                <mesh position={[0.03, -0.3, 0.12]} rotation={[0.4, 0, 0.3]} material={mats.chrome}>
+                <mesh position={[0.03, -0.3, 0.13]} rotation={[0.4, 0, 0.3]} material={mats.chrome}>
                   <cylinderGeometry args={[0.007, 0.007, 0.12, 6]} />
                 </mesh>
               </group>
             </group>
 
             {/* doughnut arm */}
-            <group ref={foodArmRef} position={[-0.255, 0.58, 0]} rotation={[-0.34, 0, 0.5]}>
+            <group ref={foodArmRef} position={[-0.3, 0.585, 0.01]} rotation={[-0.34, 0, -0.5]}>
               <group rotation={down}>
+                <mesh geometry={geo.shoulderCap} material={mats.shirt} castShadow />
                 <mesh geometry={geo.upperArm} material={mats.shirt} castShadow />
               </group>
-              <group ref={foodForeRef} position={[0, -0.27, 0]} rotation={[-0.55, 0, 0]}>
+              <group ref={foodForeRef} position={[0, -0.27, 0]} rotation={[-0.95, 0, 0]}>
                 <group rotation={down}>
+                  <mesh geometry={geo.elbow} material={mats.shirt} castShadow />
                   <mesh geometry={geo.foreArm} material={mats.shirt} castShadow />
                 </group>
-                <mesh position={[0, -0.28, 0.012]} material={mats.skin} castShadow>
-                  <boxGeometry args={[0.075, 0.11, 0.1]} />
-                </mesh>
+                <group position={[0, -0.255, 0.01]} rotation={down}>
+                  <mesh geometry={geo.fist} material={mats.skin} castShadow />
+                </group>
                 {/* held between the fingers, bite already taken */}
-                <group position={[0, -0.315, 0.075]} rotation={[1.35, 0.3, 0.4]}>
+                <group position={[0, -0.33, 0.075]} rotation={[1.35, 0.3, 0.4]}>
                   <mesh geometry={geo.donut} material={mats.icing} castShadow />
                   {SPRINKLES.map((s, i) => (
                     <mesh key={i} position={s.pos} rotation={s.rot} material={mats.sprinkle}>

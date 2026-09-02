@@ -521,7 +521,7 @@ function Hills() {
   // shape and not a heap of triangles.
   const geos = useMemo(() => [1, 2, 3].map((i) => lumpGeometry(880 + i, 1, 0.26, 3, true)), []);
   const mat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: "#68855080", roughness: 1 }),
+    () => new THREE.MeshStandardMaterial({ color: "#688550", roughness: 1 }),
     []
   );
   const spots = useMemo(() => {

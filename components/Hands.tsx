@@ -35,16 +35,40 @@ function once<T>(build: () => T): () => T {
  */
 const UP: [number, number, number] = [-Math.PI / 2, 0, 0];
 
-/** One bone of a finger: tapered, so a finger made of three reads as jointed. */
-const digit = (len: number, top: number, tip: number) =>
-  loft(
+/**
+ * One bone of a finger: tapered, so a finger made of three reads as jointed.
+ *
+ * Each bone runs a little past the knuckle at both ends and domes off there.
+ * Three flat-capped tubes stacked nose to tail look fine straight and come apart
+ * into three separate segments the moment the finger curls, which is the whole
+ * problem with building anything out of butted cylinders.
+ */
+const digit = (len: number, top: number, tip: number) => {
+  const over = Math.min(0.012, len * 0.3);
+  return loft(
     [
+      { z: -over, rx: top * 0.5, ry: top * 0.44 },
       { z: 0, rx: top, ry: top * 0.88 },
       { z: len * 0.4, rx: top * 0.97, ry: top * 0.86 },
       { z: len * 0.82, rx: (top + tip) * 0.47, ry: (top + tip) * 0.42 },
       { z: len, rx: tip, ry: tip * 0.86 },
+      { z: len + over, rx: tip * 0.5, ry: tip * 0.44 },
     ],
-    { radial: 10, segments: 10, square: 0.25 },
+    { radial: 12, segments: 18, square: 0.25 },
+  );
+};
+
+/** The knuckle a finger folds over, covering the two bone ends inside it. */
+const knuckleGeo = (r: number) =>
+  loft(
+    [
+      { z: -0.012, rx: r * 0.36, ry: r * 0.32 },
+      { z: -0.005, rx: r * 0.86, ry: r * 0.8 },
+      { z: 0.008, rx: r, ry: r * 0.92 },
+      { z: 0.02, rx: r * 0.78, ry: r * 0.72 },
+      { z: 0.03, rx: r * 0.3, ry: r * 0.28 },
+    ],
+    { radial: 12, segments: 14 },
   );
 
 /**
@@ -74,6 +98,9 @@ const boneGeo = {
   distal: once(() => digit(0.03, 0.0128, 0.0105)),
   thumbBase: once(() => digit(0.045, 0.019, 0.016)),
   thumbTip: once(() => digit(0.036, 0.016, 0.0135)),
+  // one knuckle per joint, each a shade wider than the bones meeting in it
+  midKnuckle: once(() => knuckleGeo(0.0172)),
+  tipKnuckle: once(() => knuckleGeo(0.0152)),
 };
 
 /** The dark keratin cap on the cow's middle fingertip. It still has a hoof in there. */
@@ -109,10 +136,12 @@ function Finger({
       </group>
       <group position={[0, 0.05, 0]} rotation={[curl[1], 0, 0]}>
         <group rotation={UP}>
+          <mesh geometry={boneGeo.midKnuckle()} material={material} castShadow />
           <mesh geometry={boneGeo.middle()} material={material} castShadow />
         </group>
         <group position={[0, 0.038, 0]} rotation={[curl[2], 0, 0]}>
           <group rotation={UP}>
+            <mesh geometry={boneGeo.tipKnuckle()} material={material} castShadow />
             <mesh geometry={boneGeo.distal()} material={material} castShadow />
           </group>
           {children}

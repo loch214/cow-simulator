@@ -7,7 +7,7 @@ export const cam = {
   yaw: 0,
   /** Elevation above the horizon. Bigger = looking further down at the cow. */
   pitch: 0.42,
-  dist: 6.5,
+  dist: 5.2,
   /** performance.now() of the last manual look — used to back off auto-follow. */
   lastLookAt: 0,
   /** True while the pointer is captured, so the HUD can drop the "click" hint. */
@@ -94,6 +94,26 @@ export function cameraGap(): { flat: number; up: number } {
 
 export function resetBehind(facing: number) {
   cam.yaw = facing + Math.PI;
+}
+
+/**
+ * Swing the camera round to the FRONT of the cow, so whatever its face is doing
+ * is actually pointed at the player. `facing` is the cow's heading; the camera
+ * wants to sit on the far side of it, i.e. at that same angle, because the
+ * camera's own yaw is measured from behind.
+ *
+ * Unlike `easeBehind` this ignores how recently the player looked around: it is
+ * only ever called for a beat or two during a reaction, and the entire point is
+ * that it overrides where you had the camera pointed.
+ */
+export function frameFront(facing: number, dt: number, rate = 3.2) {
+  let diff = ((facing - cam.yaw + Math.PI) % (Math.PI * 2)) - Math.PI;
+  if (diff < -Math.PI) diff += Math.PI * 2;
+  cam.yaw += diff * Math.min(1, dt * rate);
+  // Drop towards eye level on the way round. Looking down on the top of a cow's
+  // skull from 0.4 rad up hides the face that we just went to the trouble of
+  // turning towards the lens.
+  cam.pitch += (0.2 - cam.pitch) * Math.min(1, dt * rate * 0.7);
 }
 
 /**
