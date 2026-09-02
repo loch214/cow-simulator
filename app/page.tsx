@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import HUD from "@/components/HUD";
 import LipMark from "@/components/LipMark";
+import Splash from "@/components/Splash";
 import TouchControls from "@/components/TouchControls";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
@@ -14,6 +15,7 @@ export default function Home() {
       <HUD />
       <TouchControls />
       <LipMark />
+      <Splash />
     </div>
   );
 }

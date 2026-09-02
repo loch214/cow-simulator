@@ -128,3 +128,30 @@ export function easeBehind(facing: number, dt: number) {
   if (diff < -Math.PI) diff += Math.PI * 2;
   cam.yaw += diff * Math.min(1, dt * 1.6);
 }
+
+// ---------------------------------------------------------------------------
+// screen shape
+// ---------------------------------------------------------------------------
+
+/**
+ * How much further back the camera sits than the player asked for, to make up
+ * for a narrow screen. Set once per resize by `FrameRig` in Scene.tsx and
+ * folded into every offset below, so pinch-zoom still works in absolute terms —
+ * the player's `dist` means the same thing, we just render it from further off
+ * when the frame is tall and thin.
+ */
+export const frame = { distScale: 1 };
+
+/**
+ * Where the camera should sit, given the point it's orbiting, with the screen
+ * shape taken into account.
+ */
+export function framedOffset(): { x: number; y: number; z: number } {
+  const d = cam.dist * frame.distScale;
+  const cp = Math.cos(cam.pitch);
+  return {
+    x: Math.sin(cam.yaw) * cp * d,
+    y: Math.sin(cam.pitch) * d,
+    z: Math.cos(cam.yaw) * cp * d,
+  };
+}

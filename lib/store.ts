@@ -9,6 +9,14 @@ import type { Speaker } from "./cutscene";
 export type GagId = "eat" | "shy" | "slap";
 
 export interface CowStore {
+  /**
+   * False until the player taps through the title card. While it's false the
+   * cow is up on its hind legs dancing and no control is wired up — which is
+   * also what buys us the user gesture we need to ask for fullscreen, a
+   * landscape lock and the AudioContext, none of which a browser will hand
+   * over without one.
+   */
+  started: boolean;
   /** null = free roaming. A gag freezes the cow; a cutscene takes it over. */
   activeGag: GagId | null;
   gagStartedAt: number;
@@ -31,6 +39,7 @@ export interface CowStore {
   /** Id of the grass tuft the cow is close enough to eat, if any. */
   nearGrass: number | null;
 
+  start: () => void;
   say: (line: string | null, speaker?: Speaker) => void;
   setNearGrass: (id: number | null) => void;
   regrow: (id: number) => void;
@@ -64,6 +73,7 @@ export const useCowStore = create<CowStore>((set, get) => {
     (window as unknown as { __cowStore?: unknown }).__cowStore = () => get();
   }
   return {
+    started: false,
     activeGag: null,
     gagStartedAt: 0,
     inCutscene: false,
@@ -75,6 +85,14 @@ export const useCowStore = create<CowStore>((set, get) => {
     slapAt: 0,
     grassEatenAt: GRASS.map(() => null),
     nearGrass: null,
+
+    // The tap on the title card. Audio is unlocked here and nowhere else that
+    // matters: this is the one moment we are guaranteed to be inside a gesture.
+    start: () => {
+      if (get().started) return;
+      ensureAudio();
+      set({ started: true });
+    },
 
     say: (line, speaker = "cow") => set({ dialogue: line, speaker }),
 
@@ -93,7 +111,7 @@ export const useCowStore = create<CowStore>((set, get) => {
     // pen worth walking up to is grass; new interactables slot in here.
     interact: () => {
       const s = get();
-      if (s.activeGag || s.inCutscene) return;
+      if (!s.started || s.activeGag || s.inCutscene) return;
       const id = s.nearGrass;
       if (id === null || s.grassEatenAt[id] !== null) return;
 
@@ -106,7 +124,7 @@ export const useCowStore = create<CowStore>((set, get) => {
     },
 
     triggerGag: (id) => {
-      if (get().inCutscene) return;
+      if (!get().started || get().inCutscene) return;
       ensureAudio();
       clearScheduled();
 

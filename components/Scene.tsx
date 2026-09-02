@@ -11,7 +11,7 @@ import PoliceStation from "./PoliceStation";
 import Environment from "./Environment";
 import { useCowStore } from "@/lib/store";
 import { cowState } from "@/lib/cowState";
-import { cameraOffset, easeBehind, resetBehind, stepShake } from "@/lib/camera";
+import { cam, frame, framedOffset, easeBehind, resetBehind, stepShake } from "@/lib/camera";
 import { attachLook, isTouch } from "@/lib/input";
 import { WAYPOINTS } from "@/lib/world";
 
@@ -57,10 +57,58 @@ export default function Scene() {
       <Cow />
       <PoliceStation />
 
+      <FrameRig />
       <CameraRig />
       <DevBridge />
     </Canvas>
   );
+}
+
+/**
+ * Keeps the shot readable on any screen shape.
+ *
+ * `fov` in three.js is the VERTICAL angle, which is the wrong end to hold fixed
+ * on a phone: a 45-degree vertical on a 9:20 portrait screen leaves barely 22
+ * degrees across, which is why an upright phone used to show nothing but the
+ * cow's backside. So the HORIZONTAL angle is what's held constant instead — the
+ * "Hor+" convention — and the vertical gives way to keep it.
+ *
+ * Two limits stop that from going silly. The vertical is capped, because the
+ * angle a tall screen actually wants is about 117 degrees and that looks like a
+ * fisheye lens. Whatever width the cap couldn't give back is then taken by
+ * pulling the camera further off the cow instead, which widens the view without
+ * bending it.
+ */
+const DESIGN_FOV = 45; // vertical degrees, framed for a 16:9 screen
+const DESIGN_ASPECT = 16 / 9;
+const DESIGN_HFOV = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(DESIGN_FOV) / 2) * DESIGN_ASPECT);
+const FOV_CAP = 64;
+const DIST_CAP = 1.6;
+
+function FrameRig() {
+  // Recomputed from inside the frame loop rather than an effect, because the
+  // camera is the render loop's to mutate — the same reason `CameraRig` below
+  // writes to it there. The ref makes it a no-op on every frame but the ones
+  // where the window actually changed shape.
+  const lastAspect = useRef(0);
+
+  useFrame(({ camera, size }) => {
+    const aspect = size.width / Math.max(1, size.height);
+    if (Math.abs(aspect - lastAspect.current) < 0.001) return;
+    lastAspect.current = aspect;
+
+    const lens = camera as THREE.PerspectiveCamera;
+    const wanted = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(DESIGN_HFOV / 2) / aspect));
+    lens.fov = THREE.MathUtils.clamp(wanted, DESIGN_FOV, FOV_CAP);
+    lens.updateProjectionMatrix();
+
+    // What we ended up with across, after the cap — and so how much further
+    // back the camera has to stand to make up the difference.
+    const got = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(lens.fov) / 2) * aspect);
+    frame.distScale = THREE.MathUtils.clamp(DESIGN_HFOV / got, 1, DIST_CAP);
+  });
+
+  return null;
 }
 
 /**
@@ -143,13 +191,24 @@ function CameraRig() {
     return attachLook(gl.domElement);
   }, [gl]);
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const dt = Math.min(delta, 0.05);
+    const started = useCowStore.getState().started;
 
     // Ease the point we're orbiting toward the cow so the camera doesn't jitter
     // with every step of the walk cycle.
     want.set(cowState.x, 1.05 + cowState.stand * 0.75, cowState.z);
     focus.current.lerp(want, 1 - Math.pow(0.0015, dt));
+
+    // Title card: a slow drift across the FRONT of the cow, so you watch it
+    // dance rather than watching it dance away from you. The values it leaves
+    // behind are deliberately ordinary ones — a fine distance and pitch to
+    // start playing at — so tapping through needs no handoff animation at all.
+    if (!started) {
+      cam.yaw = cowState.facing + Math.sin(state.clock.elapsedTime * 0.22) * 0.6;
+      cam.pitch = 0.28;
+      cam.dist = 5.4;
+    }
 
     // On a phone there's no spare thumb for looking, so swing the camera around
     // behind the cow by itself. With a mouse, the player is in charge.
@@ -157,9 +216,11 @@ function CameraRig() {
     // Never during a reaction: the kiss turns the cow to face the camera, and if
     // the camera were also chasing round behind the cow the two would spin round
     // each other forever.
-    if (isTouch() && !useCowStore.getState().activeGag) easeBehind(cowState.facing, dt);
+    if (started && isTouch() && !useCowStore.getState().activeGag) {
+      easeBehind(cowState.facing, dt);
+    }
 
-    const off = cameraOffset();
+    const off = framedOffset();
     // Impacts knock the camera about — a slap you can feel from behind the lens.
     const shake = stepShake(dt);
     camera.position.set(

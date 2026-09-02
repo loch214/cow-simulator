@@ -16,6 +16,7 @@ import {
   quadWalk,
 } from "@/lib/locomotion";
 import { angleDelta, approach, cowState, turnToward } from "@/lib/cowState";
+import { dancePose } from "@/lib/dance";
 import { moveAxis, onAction, onInteract, startInput } from "@/lib/input";
 import { cam, cameraGap, frameFront, lookForward } from "@/lib/camera";
 import { cowPhysics, kickSpring, makeSpring, relaxPhysics, stepCowPhysics, stepSpring } from "@/lib/physics";
@@ -855,6 +856,14 @@ export default function Cow() {
   const nostrilRef = useRef<THREE.Group>(null);
   const breathRef = useRef<THREE.Mesh>(null);
 
+  /**
+   * How far into the title-card dance the cow is: 0 on all fours, 1 up on its
+   * hind legs and going for it. Rises while the splash is up and falls once the
+   * player taps through, so the cow settles back down onto four feet instead of
+   * snapping there.
+   */
+  const danceK = useRef(0);
+
   const activeGag = useCowStore((s) => s.activeGag);
   const gagStartedAt = useCowStore((s) => s.gagStartedAt);
   const inCutscene = useCowStore((s) => s.inCutscene);
@@ -1112,7 +1121,15 @@ export default function Cow() {
     let pose: Pose;
     let chewing = 0;
 
-    if (inCutscene && runnerRef.current) {
+    // The title card owns the cow completely: no input, no locomotion, just the
+    // dance. See lib/dance.ts.
+    const started = useCowStore.getState().started;
+    danceK.current = approach(danceK.current, started ? 0 : 1, dt / (started ? 0.8 : 1.2));
+    if (!started) {
+      cowState.speed = 0;
+      cowState.stand = danceK.current;
+      pose = dancePose(now, danceK.current);
+    } else if (inCutscene && runnerRef.current) {
       const result = stepCutscene(runnerRef.current, dt);
       if (result.say !== undefined) {
         useCowStore.getState().say(result.say, result.speaker);
@@ -1156,6 +1173,13 @@ export default function Cow() {
       if (activeGag === "shy") pose = addPose(pose, kissLunge(elapsed, dt));
     } else {
       pose = drive(dt, now, grassEatenAt);
+      // Still coming down off the dance. `dancePose` fades to nothing on its
+      // own, so adding it here just lowers the cow through the first second of
+      // play rather than dropping it.
+      if (danceK.current > 0.001) {
+        cowState.stand = danceK.current;
+        pose = addPose(pose, dancePose(now, danceK.current));
+      }
     }
 
     // How fast the cow is turning drives the head lag, the lean and the tail.

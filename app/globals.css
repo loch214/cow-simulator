@@ -54,3 +54,88 @@ body {
 .lip-fog {
   animation: lip-fog var(--lip-ms, 4500ms) ease-out forwards;
 }
+
+/* ---------------------------------------------------------------------------
+ * Safe areas
+ *
+ * The layout asks for `viewport-fit=cover` so the 3D canvas can run edge to
+ * edge, under the notch and under the home indicator. That's right for the
+ * scene and wrong for the controls, which then sit under the hardware. These
+ * are the four gaps to keep clear; `.safe-area` is the box the whole HUD is
+ * positioned inside, so nothing has to remember to do this individually.
+ *
+ * The fallbacks matter: `env()` is 0px on desktop and on Android browsers that
+ * don't report insets, so this collapses to a plain full-screen box there.
+ * ------------------------------------------------------------------------ */
+:root {
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+}
+
+.safe-area {
+  top: var(--safe-t);
+  right: var(--safe-r);
+  bottom: var(--safe-b);
+  left: var(--safe-l);
+}
+
+/* ---------------------------------------------------------------------------
+ * The title card
+ * ------------------------------------------------------------------------ */
+
+/* Everything arrives on a stagger, set per-element with --in-delay. */
+@keyframes splash-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.splash-in {
+  opacity: 0;
+  animation: splash-in 620ms cubic-bezier(0.2, 0.8, 0.3, 1) var(--in-delay, 0ms) forwards;
+}
+
+/* The tap target breathes, so it reads as the thing to press even with a cow
+   dancing behind it. */
+@keyframes tap-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.045); }
+}
+
+.tap-breathe {
+  animation: tap-breathe 1900ms ease-in-out infinite;
+}
+
+/* On tap the whole card lifts away rather than blinking off, which covers the
+   second or so the cow spends lowering itself back onto four legs. */
+@keyframes splash-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(1.08); }
+}
+
+.splash-out {
+  animation: splash-out 460ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+
+/* Hints that say their piece and then get out of the way. */
+@keyframes hint-fade {
+  0%, 74%  { opacity: 1; }
+  100%     { opacity: 0; visibility: hidden; }
+}
+
+.hint-fade {
+  animation: hint-fade var(--hint-ms, 9000ms) ease-in forwards;
+}
+
+/* The "turn your phone" arrow. */
+@keyframes rotate-hint {
+  0%, 18%   { transform: rotate(0deg); }
+  38%, 72%  { transform: rotate(-90deg); }
+  92%, 100% { transform: rotate(0deg); }
+}
+
+.rotate-hint {
+  animation: rotate-hint 3200ms cubic-bezier(0.5, 0, 0.2, 1) infinite;
+}

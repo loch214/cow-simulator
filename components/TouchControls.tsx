@@ -2,10 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { setStick } from "@/lib/input";
+import { useCowStore } from "@/lib/store";
 import { useIsTouch } from "@/lib/useIsTouch";
 
-const BASE = 150; // outer ring, in px — large enough to hit without looking
-const KNOB = 68;
+// Outer ring, in px. Big enough to hit without looking, but smaller than it
+// was: at 150 the stick, the buttons and the hint banner between them took up
+// the whole bottom third of an upright phone and left the cow squeezed into
+// what was left. The knob keeps its size, so the target you actually press is
+// unchanged — only the ring around it got tighter.
+const BASE = 128;
+const KNOB = 66;
 const RADIUS = (BASE - KNOB) / 2;
 
 /**
@@ -18,6 +24,7 @@ const RADIUS = (BASE - KNOB) / 2;
  */
 export default function TouchControls() {
   const touch = useIsTouch();
+  const started = useCowStore((s) => s.started);
   const padRef = useRef<HTMLDivElement>(null);
   const activeId = useRef<number | null>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
@@ -31,7 +38,7 @@ export default function TouchControls() {
   // Make sure the cow stops if the controls ever unmount mid-walk.
   useEffect(() => release, [release]);
 
-  if (!touch) return null;
+  if (!touch || !started) return null;
 
   const update = (clientX: number, clientY: number) => {
     const el = padRef.current;
@@ -63,10 +70,18 @@ export default function TouchControls() {
       }}
       onPointerUp={release}
       onPointerCancel={release}
-      className="pointer-events-auto absolute bottom-6 left-5 touch-none select-none rounded-full border-4 border-white/50 bg-black/25 backdrop-blur-sm"
-      style={{ width: BASE, height: BASE }}
+      // Offsets are measured from the safe area rather than the raw viewport,
+      // so the stick can't end up half under a home indicator or a browser nav
+      // bar — which is exactly where it sat on an upright Android phone.
+      className="pointer-events-auto absolute touch-none select-none rounded-full border-4 border-white/50 bg-black/25 backdrop-blur-sm"
+      style={{
+        width: BASE,
+        height: BASE,
+        left: "calc(var(--safe-l) + 1rem)",
+        bottom: "calc(var(--safe-b) + 1rem)",
+      }}
     >
-      <div className="absolute inset-0 flex items-center justify-center text-4xl text-white/35">
+      <div className="absolute inset-0 flex items-center justify-center text-3xl text-white/35">
         ✛
       </div>
       <div
