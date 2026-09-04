@@ -14,7 +14,7 @@ import {
 } from "@/lib/textures";
 import InstancedGroup, { type Placement } from "./Instanced";
 import { applySway, wind } from "@/lib/sway";
-import { OBSTACLES, PIT_RADIUS, STATION } from "@/lib/world";
+import { OBSTACLES, PIT_RADIUS, POND, STATION, TREES } from "@/lib/world";
 
 /** How far out the ground plane and the loose grass go. Beyond that: hills and haze. */
 const FIELD_RADIUS = 34;
@@ -130,6 +130,8 @@ function isBare(x: number, z: number): boolean {
   if (Math.hypot(x, z) < PIT_RADIUS - 0.35) return true; // the pen floor
   if (Math.abs(z) < 1.6 && x > PIT_RADIUS - 1 && x < STATION.x - 1) return true; // the road
   if (Math.abs(x - STATION.x) < 4 && Math.abs(z) < 4.5) return true; // the station yard
+  // the pond, and the trodden mud round the edge of it
+  if (Math.hypot(x - POND.x, z - POND.z) < POND.r + 0.6) return true;
   return false;
 }
 
@@ -335,30 +337,11 @@ function Trees() {
     };
   }, []);
 
-  const spots = useMemo(() => {
-    const r = rng(1234);
-    const out: { x: number; z: number; kind: number; scale: number; spin: number }[] = [];
-    const ring: [number, number][] = [
-      [-13, -7], [-16, 5], [-9, 14], [5, -15], [14, -12],
-      [11, 13], [21, 10], [25, -9], [-3, 18], [28, 4],
-      [-21, -14], [18, 18], [-24, 8], [7, 22], [-14, -19],
-      [30, -16], [24, 20], [-29, -3],
-    ];
-    for (const [x, z] of ring) {
-      out.push({
-        x: x + (r() - 0.5) * 2,
-        z: z + (r() - 0.5) * 2,
-        kind: Math.floor(r() * 4),
-        scale: 0.85 + r() * 0.7,
-        spin: r() * Math.PI * 2,
-      });
-    }
-    return out;
-  }, []);
-
+  // The placement list lives in lib/world.ts, because the collision reads it
+  // too: a tree the cow can walk through is worse than no tree.
   return (
     <group>
-      {spots.map((s, i) => {
+      {TREES.map((s, i) => {
         const t = kinds[s.kind];
         return (
           <group key={i} position={[s.x, 0, s.z]} rotation={[0, s.spin, 0]} scale={s.scale}>

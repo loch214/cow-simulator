@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
-import { useCowStore } from "@/lib/store";
+import { useCowStore, type Prompt } from "@/lib/store";
 import { gags, kissAmount, KISS_BACK, SLAP_IMPACT } from "@/lib/reactions";
 import { addPose, addPoses, samplePose, Pose, PartName, PART_NAMES, LEGS } from "@/lib/poses";
 import {
@@ -27,10 +27,16 @@ import { wind } from "@/lib/sway";
 import { hairBump, headMap, hideMap, legMap, upperLegMap } from "@/lib/textures";
 import { CowHand, SlapHand } from "./Hands";
 import {
+  GATE_POINT,
   GRASS,
   INTERACT_RANGE,
-  OBSTACLES,
-  PIT_INNER,
+  POND,
+  resolveFence,
+  resolveSolids,
+  SCARECROW,
+  SPEED_LIMIT,
+  SPEED_TRAP,
+  SPEED_TRAP_RANGE,
   STRIDE_RATE,
   TURN_SPEED,
   WALK_SPEED,
@@ -64,12 +70,30 @@ const part = (
   scale: [number, number, number] = UNIT
 ): Base => ({ pos, rot, scale });
 
+/**
+ * How far back the ears sweep from straight-out, and how far the tips droop.
+ *
+ * These are not free numbers. An ear is a leaf built along +z, and the group's
+ * resting rotation is the ONLY thing deciding which way it leaves the skull —
+ * so `[a, b, 0]` has to be solved rather than guessed. For Euler XYZ the local
+ * +z axis lands at `(sin b, -cos b·sin a, cos b·cos a)`; putting `b = ±(PI/2 +
+ * EAR_SWEEP)` aims it straight out of the side of the head and swings it back,
+ * and `a = -EAR_DROOP` drops the tip. Guessed values are how both ears ended up
+ * pointing forwards, with every millimetre of them buried inside the skull.
+ */
+const EAR_SWEEP = 0.34;
+const EAR_DROOP = 0.62;
+const EAR_L: [number, number, number] = [-EAR_DROOP, -(Math.PI / 2 + EAR_SWEEP), 0];
+const EAR_R: [number, number, number] = [-EAR_DROOP, Math.PI / 2 + EAR_SWEEP, 0];
+
 const BASE: Record<PartName, Base> = {
   body: part(ORIGIN),
   head: part(HEAD_POS),
   jaw: part([0, -0.045, 0.05]),
-  earL: part([-0.135, 0.03, -0.045], [0.15, 0.35, 0.95]),
-  earR: part([0.135, 0.03, -0.045], [0.15, -0.35, -0.95]),
+  // Rooted just inside the side of the skull, below the horns and behind the
+  // eye — where a cow's ear actually comes out.
+  earL: part([-0.118, 0.026, -0.052], EAR_L),
+  earR: part([0.118, 0.026, -0.052], EAR_R),
 
   // Leg joints carry their standing angles as their resting rotation, so a pose
   // that says nothing about the legs leaves the cow standing square rather than
@@ -109,6 +133,9 @@ const HEAD_FORWARD = HEAD_POS[2] + MUZZLE_Z;
  * near plane is 0.12, so there is room to spare.
  */
 const KISS_GAP = 0.34;
+
+/** How long the gate takes to swing, in seconds. */
+const GATE_SWING = 0.7;
 
 // ---------------------------------------------------------------------------
 // geometry — built once, on first use
@@ -262,6 +289,44 @@ const brisketGeo = once(() =>
   )
 );
 
+/**
+ * The skull. Rings run from behind the poll (-z) to the nose (+z): broad and
+ * squarish across the cheeks, pinched at the bridge, then flaring back out into
+ * a blunt muzzle. A cow head is short, deep and wide — build it long and tapered
+ * and you get an anteater, which is exactly what the first attempt looked like.
+ *
+ * This table is the single source of truth for the shape of the head: `skullGeo`
+ * lofts it, `scalpAt` plants hair on it and `faceAt` puts the eyes on it. It
+ * lives up here, above all three, because a copy of it that drifts is how the
+ * fringe ends up growing out of the inside of the forehead.
+ */
+const SKULL_RINGS = [
+  { z: -0.16, y: 0.005, rx: 0.126, ry: 0.124 },
+  { z: -0.06, y: 0.012, rx: 0.154, ry: 0.15 },
+  { z: 0.04, y: -0.014, rx: 0.146, ry: 0.138 },
+  // the bridge, pinched in — this waist is what stops the head being a wedge
+  { z: 0.13, y: -0.05, rx: 0.107, ry: 0.108 },
+  { z: 0.21, y: -0.072, rx: 0.094, ry: 0.094 },
+  // ...and the muzzle end flaring back OUT, wider than the bridge above it
+  { z: 0.28, y: -0.086, rx: 0.099, ry: 0.096 },
+  { z: 0.325, y: -0.092, rx: 0.099, ry: 0.092 },
+];
+
+/** The skull's cross-section at `z`, interpolated between rings. */
+function skullAt(z: number) {
+  const r = SKULL_RINGS;
+  let i = 0;
+  while (i < r.length - 2 && z > r[i + 1].z) i++;
+  const a = r[i];
+  const b = r[i + 1];
+  const f = Math.max(0, Math.min(1, (z - a.z) / (b.z - a.z)));
+  return {
+    cy: a.y + (b.y - a.y) * f,
+    rx: a.rx + (b.rx - a.rx) * f,
+    ry: a.ry + (b.ry - a.ry) * f,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // hair
 //
@@ -330,26 +395,22 @@ const lockTipGeo = once(() => lockPiece(0.5, 1, 5));
  * of every lock started out inside the skull and came out through the forehead
  * looking like a row of spikes driven into it.
  */
-const SCALP: [number, number, number, number][] = [
-  // z, centre y, half width, half height
-  [-0.16, 0.005, 0.126, 0.124],
-  [-0.06, 0.012, 0.154, 0.15],
-  [0.04, -0.012, 0.15, 0.14],
-  [0.13, -0.044, 0.116, 0.114],
-  [0.21, -0.064, 0.104, 0.1],
-];
-
 function scalpAt(x: number, z: number): number {
-  let i = 0;
-  while (i < SCALP.length - 2 && z > SCALP[i + 1][0]) i++;
-  const a = SCALP[i];
-  const b = SCALP[i + 1];
-  const f = Math.max(0, Math.min(1, (z - a[0]) / (b[0] - a[0])));
-  const cy = a[1] + (b[1] - a[1]) * f;
-  const rx = a[2] + (b[2] - a[2]) * f;
-  const ry = a[3] + (b[3] - a[3]) * f;
+  const { cy, rx, ry } = skullAt(z);
   const t = Math.min(1, Math.abs(x) / rx);
   return cy + ry * Math.sqrt(Math.max(0, 1 - t * t));
+}
+
+/**
+ * How far out the side of the head the surface is at (`y`, `z`) — the same
+ * sampling as `scalpAt`, turned ninety degrees. The eyes are pushed out onto
+ * this rather than placed by eye, because an eye a centimetre too far in
+ * vanishes into the skull and the cow goes blank.
+ */
+function faceAt(y: number, z: number): number {
+  const { cy, rx, ry } = skullAt(z);
+  const t = Math.min(1, Math.abs(y - cy) / ry);
+  return rx * Math.sqrt(Math.max(0, 1 - t * t));
 }
 
 interface Lock {
@@ -407,37 +468,45 @@ function clump({ seed, count, spread, z, aim, drop, lift = 0.008, roll = 0.9 }: 
   });
 }
 
-/** The fringe that hangs forward down the forehead, between the horns. */
+/**
+ * The fringe that hangs forward down the forehead, between the horns.
+ *
+ * `aim` is POSITIVE, i.e. the strands leave the scalp already tipping down the
+ * face. That matters more than it looks: the forehead falls away towards the
+ * nose faster than the hair does, so a fringe aimed level or up stands off the
+ * skull as a crest of spikes instead of lying on it — which is exactly what
+ * this looked like before, a punk fin rather than a forelock.
+ */
 const FORELOCK = clump({
   seed: 6161,
-  count: 18,
-  spread: 0.085,
-  z: -0.045,
-  aim: -0.02,
-  drop: 1,
-  roll: 1.15,
+  count: 17,
+  spread: 0.088,
+  z: -0.028,
+  aim: 0.3,
+  drop: 1.05,
+  roll: 0.8,
 });
-/** A shorter, fuller row behind it, standing up off the poll to give it body. */
+/** A shorter, fuller row behind it, lying back over the poll to give it body. */
 const TOPKNOT = clump({
   seed: 6162,
   count: 10,
-  spread: 0.06,
-  z: -0.105,
-  aim: -0.34,
+  spread: 0.062,
+  z: -0.112,
+  aim: -0.06,
   drop: 0.5,
-  lift: 0.012,
-  roll: 0.5,
+  lift: 0.01,
+  roll: 0.4,
 });
 /** The strands that get round the sides and hang beside the ears. */
 const SIDELOCK = clump({
   seed: 6164,
   count: 6,
-  spread: 0.108,
-  z: -0.075,
-  aim: 0.12,
-  drop: 0.62,
+  spread: 0.105,
+  z: -0.05,
+  aim: 0.34,
+  drop: 0.6,
   lift: 0.004,
-  roll: 2.1,
+  roll: 1.7,
 });
 /** Every clump on the head, drawn together so they move as one head of hair. */
 const HAIR_CLUMPS: { tag: string; locks: Lock[]; shadow: boolean }[] = [
@@ -463,28 +532,7 @@ const SWITCH: Lock[] = (() => {
   });
 })();
 
-/**
- * The skull. Rings run from behind the poll (-z) to the nose (+z): broad and
- * squarish across the cheeks, pinched at the bridge, then flaring back out into
- * a blunt muzzle. A cow head is short, deep and wide — build it long and tapered
- * and you get an anteater, which is exactly what the first attempt looked like.
- */
-const skullGeo = once(() =>
-  loft(
-    [
-      { z: -0.16, y: 0.005, rx: 0.126, ry: 0.124 },
-      { z: -0.06, y: 0.012, rx: 0.154, ry: 0.15 },
-      { z: 0.04, y: -0.012, rx: 0.15, ry: 0.14 },
-      // the bridge, pinched in — this waist is what stops the head being a wedge
-      { z: 0.13, y: -0.044, rx: 0.116, ry: 0.114 },
-      { z: 0.21, y: -0.064, rx: 0.104, ry: 0.1 },
-      // ...and the muzzle end flaring back OUT, wider than the bridge above it
-      { z: 0.28, y: -0.074, rx: 0.116, ry: 0.104 },
-      { z: 0.325, y: -0.078, rx: 0.122, ry: 0.107 },
-    ],
-    { radial: 22, segments: 42, square: 0.2 }
-  )
-);
+const skullGeo = once(() => loft(SKULL_RINGS, { radial: 22, segments: 42, square: 0.2 }));
 
 /**
  * The soft pad around the nostrils and lips — leathery, and a different colour.
@@ -495,16 +543,26 @@ const skullGeo = once(() =>
  * last stretch behind it so the transition is skin-to-skin rather than a pink
  * disc stuck on white hair.
  */
+/**
+ * Where the front of the pad is. The nostrils are placed relative to this
+ * rather than in absolute numbers, because a pad that gets narrowed by a
+ * centimetre swallows a nostril that did not move with it — which is how the
+ * cow ended up with a smooth rubber plate for a nose.
+ */
+const MUZZLE_TIP = 0.384;
 const muzzleGeo = once(() =>
   loft(
     [
-      // starts inside the skull, comes out through it, and rounds the nose off
-      { z: 0.285, y: -0.074, rx: 0.106, ry: 0.096 },
-      { z: 0.335, y: -0.08, rx: 0.128, ry: 0.112 },
-      { z: 0.372, y: -0.085, rx: 0.122, ry: 0.104 },
-      { z: 0.395, y: -0.09, rx: 0.086, ry: 0.07 },
+      // starts inside the skull, comes out through it, and ends blunt: the flat
+      // front is what the nostrils and the philtrum have to sit on. Wider than
+      // it is tall, which is the one proportion that keeps this a muzzle and
+      // not a snout.
+      { z: 0.268, y: -0.086, rx: 0.056, ry: 0.046 },
+      { z: 0.318, y: -0.098, rx: 0.086, ry: 0.062 },
+      { z: 0.358, y: -0.106, rx: 0.088, ry: 0.062 },
+      { z: MUZZLE_TIP, y: -0.112, rx: 0.072, ry: 0.05 },
     ],
-    { radial: 22, segments: 20, square: 0.28 }
+    { radial: 22, segments: 24, square: 0.22 }
   )
 );
 
@@ -513,38 +571,45 @@ const jawGeo = once(() =>
   loft(
     [
       { z: -0.09, y: -0.02, rx: 0.112, ry: 0.062 },
-      { z: 0.04, y: -0.05, rx: 0.112, ry: 0.064 },
-      { z: 0.15, y: -0.068, rx: 0.098, ry: 0.055 },
-      { z: 0.25, y: -0.08, rx: 0.09, ry: 0.05 },
-      { z: 0.318, y: -0.086, rx: 0.082, ry: 0.044 },
+      { z: 0.04, y: -0.052, rx: 0.108, ry: 0.062 },
+      { z: 0.15, y: -0.072, rx: 0.086, ry: 0.05 },
+      { z: 0.25, y: -0.086, rx: 0.07, ry: 0.042 },
+      { z: 0.312, y: -0.096, rx: 0.058, ry: 0.034 },
     ],
     { radial: 16, segments: 20, square: 0.3 }
   )
 );
 
-/** A big soft leaf of an ear. Built along +z and swung outwards by its base rotation. */
+/**
+ * A big soft leaf of an ear. Built along +z, flat in y, and swung out of the
+ * side of the head by `EAR_L` / `EAR_R`. The first ring is buried in the skull
+ * so the root never shows; the width peaks a third of the way along and the tip
+ * rounds off rather than coming to a point, which is the difference between an
+ * ear and a fin.
+ */
 const earGeo = once(() =>
   loft(
     [
-      { z: 0, rx: 0.028, ry: 0.03 },
-      { z: 0.05, rx: 0.055, ry: 0.032 },
-      { z: 0.12, rx: 0.075, ry: 0.026 },
-      { z: 0.19, rx: 0.062, ry: 0.019 },
-      { z: 0.245, rx: 0.026, ry: 0.011 },
+      { z: -0.04, rx: 0.03, ry: 0.03 },
+      { z: 0.02, rx: 0.058, ry: 0.036 },
+      { z: 0.09, rx: 0.085, ry: 0.03 },
+      { z: 0.17, rx: 0.079, ry: 0.023 },
+      { z: 0.235, rx: 0.055, ry: 0.016 },
+      { z: 0.275, rx: 0.02, ry: 0.008 },
     ],
-    { radial: 14, segments: 20 }
+    { radial: 14, segments: 24 }
   )
 );
 
 const earInnerGeo = once(() =>
   loft(
     [
-      { z: 0.045, rx: 0.032, ry: 0.016 },
-      { z: 0.115, rx: 0.048, ry: 0.014 },
-      { z: 0.185, rx: 0.036, ry: 0.01 },
-      { z: 0.225, rx: 0.012, ry: 0.006 },
+      { z: 0.02, rx: 0.032, ry: 0.018 },
+      { z: 0.095, rx: 0.055, ry: 0.016 },
+      { z: 0.175, rx: 0.048, ry: 0.012 },
+      { z: 0.235, rx: 0.02, ry: 0.007 },
     ],
-    { radial: 12, segments: 14, caps: false }
+    { radial: 12, segments: 16, caps: false }
   )
 );
 
@@ -1121,11 +1186,15 @@ export default function Cow() {
     let pose: Pose;
     let chewing = 0;
 
-    // The title card owns the cow completely: no input, no locomotion, just the
-    // dance. See lib/dance.ts.
+    // The dance. Two things ask for it — the title card, which owns the cow
+    // completely, and the Dance button — and both get the same routine out of
+    // lib/dance.ts rather than a keyframe track. It is checked BEFORE the
+    // generic gag branch below, because `gags.dance` deliberately has no
+    // keyframes worth sampling.
     const started = useCowStore.getState().started;
-    danceK.current = approach(danceK.current, started ? 0 : 1, dt / (started ? 0.8 : 1.2));
-    if (!started) {
+    const dancing = !started || activeGag === "dance";
+    danceK.current = approach(danceK.current, dancing ? 1 : 0, dt / (dancing ? 1.2 : 0.8));
+    if (dancing) {
       cowState.speed = 0;
       cowState.stand = danceK.current;
       pose = dancePose(now, dt, danceK.current);
@@ -1173,13 +1242,31 @@ export default function Cow() {
       if (activeGag === "shy") pose = addPose(pose, kissLunge(elapsed, dt));
     } else {
       pose = drive(dt, now, grassEatenAt);
-      // Still coming down off the dance. `dancePose` fades to nothing on its
-      // own, so adding it here just lowers the cow through the first second of
-      // play rather than dropping it.
-      if (danceK.current > 0.001) {
-        cowState.stand = danceK.current;
-        pose = addPose(pose, dancePose(now, dt, danceK.current));
-      }
+    }
+
+    // Still coming down off the dance — off the title card, off the Dance
+    // button, or off a slap that interrupted one. `dancePose` fades to nothing
+    // on its own, so adding it here just lowers the cow back onto four feet
+    // instead of dropping it. It sits OUTSIDE the branch above because a gag
+    // can interrupt the dance, and a cow that snaps from upright to all fours
+    // on the frame the hand arrives has no weight at all.
+    //
+    // Not during the cutscene: that owns `cowState.stand` itself, and it rears
+    // the cow up rather than letting it down.
+    if (!dancing && !inCutscene && danceK.current > 0.001) {
+      cowState.stand = danceK.current;
+      pose = addPose(pose, dancePose(now, dt, danceK.current));
+    }
+
+    // The gate. The cutscene drives the panel itself while it is running — it
+    // lets itself out — so this only chases the player's switch the rest of the
+    // time, otherwise the two fight over the same number.
+    if (!inCutscene) {
+      cowState.gateOpen = approach(
+        cowState.gateOpen,
+        useCowStore.getState().gateOpen ? 1 : 0,
+        dt / GATE_SWING
+      );
     }
 
     // How fast the cow is turning drives the head lag, the lean and the tail.
@@ -1284,25 +1371,31 @@ export default function Cow() {
           <mesh geometry={skullGeo()} material={mats.head} castShadow />
           <mesh geometry={muzzleGeo()} material={mats.muzzle} />
           {/* the philtrum, the groove running down between the nostrils */}
-          <mesh position={[0, -0.116, 0.382]} rotation={[0.3, 0, 0]} material={mats.nostril}>
-            <boxGeometry args={[0.011, 0.048, 0.012]} />
+          <mesh
+            position={[0, -0.128, MUZZLE_TIP - 0.006]}
+            rotation={[0.24, 0, 0]}
+            material={mats.nostril}
+          >
+            <boxGeometry args={[0.009, 0.042, 0.014]} />
           </mesh>
 
-          {/* nostrils — comma-shaped, and they flare when the cow is cross */}
-          <group ref={nostrilRef} position={[0, -0.078, 0.362]}>
+          {/* Nostrils — comma-shaped, and they flare when the cow is cross.
+              They sit a few millimetres PROUD of the front of the pad; sunk
+              flush with it they disappear and the cow has a blank nose. */}
+          <group ref={nostrilRef} position={[0, -0.092, MUZZLE_TIP - 0.004]}>
             {[-1, 1].map((s) => (
               <mesh
                 key={s}
-                position={[s * 0.042, 0.016, 0.028]}
-                rotation={[0.3, 0, s * 0.6]}
-                scale={[1, 1.6, 0.55]}
+                position={[s * 0.04, 0, 0]}
+                rotation={[0.2, 0, s * 0.55]}
+                scale={[1, 1.45, 0.5]}
                 material={mats.nostril}
               >
-                <sphereGeometry args={[0.017, 10, 8]} />
+                <sphereGeometry args={[0.018, 10, 8]} />
               </mesh>
             ))}
           </group>
-          <mesh ref={breathRef} position={[0, -0.08, 0.43]} material={mats.breath}>
+          <mesh ref={breathRef} position={[0, -0.1, 0.42]} material={mats.breath}>
             <sphereGeometry args={[0.07, 8, 8]} />
           </mesh>
 
@@ -1312,18 +1405,24 @@ export default function Cow() {
             {[-1, 1].map((s) => (
               <mesh
                 key={s}
-                position={[s * 0.062, -0.052, 0.275]}
+                position={[s * 0.032, -0.048, 0.268]}
                 rotation={[0.1, -s * 0.28, 0]}
                 material={mats.nostril}
               >
-                <boxGeometry args={[0.1, 0.009, 0.012]} />
+                <boxGeometry args={[0.07, 0.008, 0.011]} />
               </mesh>
             ))}
           </group>
 
-          {/* Eyes sit out on the sides of the head, the way a prey animal's do. */}
+          {/* Eyes sit out on the sides of the head, the way a prey animal's do.
+              `faceAt` puts them ON the skull rather than near it: a couple of
+              millimetres in and the whole eye disappears inside the head. */}
           {[-1, 1].map((s, i) => (
-            <group key={s} position={[s * 0.128, 0.03, 0.02]} rotation={[0, s * 0.78, -s * 0.12]}>
+            <group
+              key={s}
+              position={[s * (faceAt(0.03, 0.025) - 0.016), 0.03, 0.025]}
+              rotation={[0, s * 0.78, -s * 0.12]}
+            >
               <mesh geometry={socketGeo()} material={mats.head} scale={[0.62, 0.78, 0.62]} />
               <mesh
                 geometry={eyeGeo()}
@@ -1354,9 +1453,9 @@ export default function Cow() {
             {[-1, 1].map((s) => (
               <mesh
                 key={s}
-                position={[s * 0.112, 0.098, 0.055]}
+                position={[s * 0.078, 0.086, 0.052]}
                 rotation={[0.15, s * 0.55, -s * 0.5]}
-                scale={[1, 0.42, 0.55]}
+                scale={[0.85, 0.4, 0.55]}
                 material={mats.dark}
               >
                 <sphereGeometry args={[0.055, 10, 8]} />
@@ -1364,13 +1463,16 @@ export default function Cow() {
             ))}
           </group>
 
+          {/* The inner ear faces DOWN in the ear's own frame, because the leaf
+              is built flat in x/z and the resting rotation lays it out level:
+              -y is the underside, which is the side you can see. */}
           <group name="earL" position={BASE.earL.pos} rotation={BASE.earL.rot}>
             <mesh geometry={earGeo()} material={mats.head} castShadow />
-            <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, 0.004, 0]} />
+            <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, -0.008, 0]} />
           </group>
           <group name="earR" position={BASE.earR.pos} rotation={BASE.earR.rot}>
             <mesh geometry={earGeo()} material={mats.head} castShadow />
-            <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, 0.004, 0]} />
+            <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, -0.008, 0]} />
           </group>
 
           {[-1, 1].map((s) => (
@@ -1409,8 +1511,13 @@ export default function Cow() {
 
           <group name="blush" position={BASE.blush.pos} scale={BASE.blush.scale}>
             {[-1, 1].map((s) => (
-              <mesh key={s} position={[s * 0.135, -0.035, 0.11]} scale={[1, 0.7, 0.5]} material={mats.blush}>
-                <sphereGeometry args={[0.055, 10, 8]} />
+              <mesh
+                key={s}
+                position={[s * (faceAt(-0.03, 0.09) - 0.012), -0.03, 0.09]}
+                scale={[1, 0.7, 0.5]}
+                material={mats.blush}
+              >
+                <sphereGeometry args={[0.05, 10, 8]} />
               </mesh>
             ))}
           </group>
@@ -1588,6 +1695,84 @@ function kissLunge(elapsed: number, dt: number): Pose {
 /** True while the cow is pressed against something, so each contact thumps once. */
 let onFence = false;
 let onProp = false;
+/** When the speed camera last went off, so it isn't one ticket per frame. */
+let lastTicket = 0;
+
+/**
+ * Whatever the cow is standing next to, as the one contextual action.
+ *
+ * Everything is a distance test against a point, and the nearest one inside its
+ * own range wins — so walking up to the gate while standing on a tuft of grass
+ * offers whichever you are actually closer to rather than whichever happens to
+ * be checked first.
+ */
+function nearestPrompt(grassEatenAt: (number | null)[]): Prompt | null {
+  const { x, z } = cowState;
+  let best: Prompt | null = null;
+  let bestD = Infinity;
+  const consider = (px: number, pz: number, range: number, p: Prompt) => {
+    const d = Math.hypot(px - x, pz - z);
+    if (d < range && d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  };
+
+  for (const spot of GRASS) {
+    if (grassEatenAt[spot.id] !== null) continue;
+    consider(spot.x, spot.z, INTERACT_RANGE, {
+      kind: "grass",
+      id: spot.id,
+      label: "Eat the grass",
+      icon: "🌿",
+    });
+  }
+
+  // The gate. Not offered while the cow is standing IN the doorway with it
+  // open — shutting it on yourself just teleports you back to whichever side
+  // the fence code thinks you were on.
+  const open = useCowStore.getState().gateOpen;
+  const gateD = Math.hypot(GATE_POINT.x - x, GATE_POINT.z - z);
+  if (!open || gateD > 1.5) {
+    consider(GATE_POINT.x, GATE_POINT.z, 2.7, {
+      kind: "gate",
+      id: 0,
+      label: open ? "Shut the gate" : "Open the gate",
+      icon: open ? "🔒" : "🚪",
+    });
+  }
+
+  consider(SCARECROW.x, SCARECROW.z, 2.3, {
+    kind: "scarecrow",
+    id: 0,
+    label: "Moo at it",
+    icon: "📣",
+  });
+  // Close enough that the muzzle actually reaches water when the head goes
+  // down. Offered from a metre further out, the cow drinks the grass.
+  consider(POND.x, POND.z, POND.r + 0.5, {
+    kind: "pond",
+    id: 0,
+    label: "Have a drink",
+    icon: "💧",
+  });
+
+  return best;
+}
+
+/**
+ * The speed camera by the road. It only cares about a cow doing more than a
+ * walking pace, and only once every few seconds.
+ */
+function checkSpeedTrap() {
+  if (!cowState.outside || cowState.speed < SPEED_LIMIT) return;
+  const d = Math.hypot(SPEED_TRAP.x - cowState.x, SPEED_TRAP.z - cowState.z);
+  if (d > SPEED_TRAP_RANGE) return;
+  const t = performance.now();
+  if (t - lastTicket < 9000) return;
+  lastTicket = t;
+  useCowStore.getState().flash();
+}
 
 /**
  * Player-driven movement for one frame. Input is camera-relative — "up" always
@@ -1595,7 +1780,6 @@ let onProp = false;
  */
 function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
   const axis = moveAxis();
-  let hitProp = false;
 
   // Forward is wherever the camera is pointing, so W always walks the cow off in
   // the direction you're looking. Taken from the camera's own yaw rather than its
@@ -1626,12 +1810,15 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
     cowState.z += Math.cos(cowState.facing) * cowState.speed * dt;
   }
 
-  // The fence is the whole point of the pen: you can't walk out of it. Walking
-  // into it is a collision, so the cow stops dead and rocks forward on impact.
-  const r = Math.hypot(cowState.x, cowState.z);
-  if (r > PIT_INNER) {
-    cowState.x = (cowState.x / r) * PIT_INNER;
-    cowState.z = (cowState.z / r) * PIT_INNER;
+  // The fence: a ring with one gap in it. Which side of the ring the cow is on
+  // is tracked rather than derived, so the gap works from both directions —
+  // see `resolveFence`. Walking into it is a collision, so the cow stops dead
+  // and rocks forward on impact.
+  const fence = resolveFence(cowState.x, cowState.z, cowState.outside, cowState.gateOpen);
+  cowState.x = fence.x;
+  cowState.z = fence.z;
+  cowState.outside = fence.outside;
+  if (fence.hit) {
     if (!onFence) {
       onFence = true;
       kickSpring(cowPhysics.shoveZ, 0.55 * gait);
@@ -1644,38 +1831,29 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
     onFence = false;
   }
 
-  // The trough and the bales are solid too. Same idea as the fence, but pushing
-  // straight out of a circle rather than back into one.
-  for (const ob of OBSTACLES) {
-    const ox = cowState.x - ob.x;
-    const oz = cowState.z - ob.z;
-    const d = Math.hypot(ox, oz);
-    if (d > 0.0001 && d < ob.r) {
-      cowState.x = ob.x + (ox / d) * ob.r;
-      cowState.z = ob.z + (oz / d) * ob.r;
-      if (!onProp) {
-        onProp = true;
-        kickSpring(cowPhysics.shoveZ, 0.4 * gait);
-        kickSpring(cowPhysics.headPitch, 1.6 * gait);
-      }
-      cowState.speed *= 0.45;
-      hitProp = true;
+  // The trough, the bales, every tree, the scarecrow, the camera post and the
+  // police station are all solid. Same idea as the fence, but pushing straight
+  // out of a circle rather than back into one.
+  const solid = resolveSolids(cowState.x, cowState.z);
+  cowState.x = solid.x;
+  cowState.z = solid.z;
+  if (solid.hit) {
+    if (!onProp) {
+      onProp = true;
+      kickSpring(cowPhysics.shoveZ, 0.4 * gait);
+      kickSpring(cowPhysics.headPitch, 1.6 * gait);
     }
+    cowState.speed *= 0.45;
+  } else {
+    onProp = false;
   }
-  if (!hitProp) onProp = false;
 
-  // Contextual prompt: closest tuft still standing, within reach.
-  let near: number | null = null;
-  let best = INTERACT_RANGE;
-  for (const spot of GRASS) {
-    if (grassEatenAt[spot.id] !== null) continue;
-    const d = Math.hypot(spot.x - cowState.x, spot.z - cowState.z);
-    if (d < best) {
-      best = d;
-      near = spot.id;
-    }
-  }
-  useCowStore.getState().setNearGrass(near);
+  const prompt = nearestPrompt(grassEatenAt);
+  const store = useCowStore.getState();
+  store.setPrompt(prompt);
+  // Grass.tsx lights the tuft the cow could eat, so it wants the id on its own.
+  store.setNearGrass(prompt?.kind === "grass" ? prompt.id : null);
+  checkSpeedTrap();
 
   const walkAmt = Math.min(1, cowState.speed / WALK_SPEED);
   const walk = quadWalk(cowState.walkPhase, walkAmt);

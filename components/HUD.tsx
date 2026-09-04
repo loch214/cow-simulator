@@ -6,16 +6,19 @@ import { onPointerLockChange } from "@/lib/input";
 import { useIsTouch } from "@/lib/useIsTouch";
 import { enterImmersive, exitImmersive, useIsFullscreen, useIsPortrait } from "@/lib/viewport";
 import { SLAPS_BEFORE_POLICE } from "@/lib/world";
+import RotateHint from "./RotateHint";
 
 export default function HUD() {
   const started = useCowStore((s) => s.started);
   const dialogue = useCowStore((s) => s.dialogue);
   const speaker = useCowStore((s) => s.speaker);
-  const nearGrass = useCowStore((s) => s.nearGrass);
+  const prompt = useCowStore((s) => s.prompt);
   const inCutscene = useCowStore((s) => s.inCutscene);
   const activeGag = useCowStore((s) => s.activeGag);
   const slapCount = useCowStore((s) => s.slapCount);
+  const flashSeq = useCowStore((s) => s.flashSeq);
   const triggerGag = useCowStore((s) => s.triggerGag);
+  const toggleDance = useCowStore((s) => s.toggleDance);
   const interact = useCowStore((s) => s.interact);
 
   const touch = useIsTouch();
@@ -25,7 +28,10 @@ export default function HUD() {
   useEffect(() => onPointerLockChange(setLocked), []);
 
   const busy = inCutscene || activeGag !== null;
-  const canEat = nearGrass !== null && !busy;
+  const canAct = prompt !== null && !busy;
+  // The dance is a toggle, so its own button stays live while it is running —
+  // everything else is locked out the way it always was.
+  const dancing = activeGag === "dance";
 
   // The title card is up; it does its own talking.
   if (!started) return null;
@@ -35,6 +41,12 @@ export default function HUD() {
     // notch, a home indicator or a browser nav bar can't land on a control. The
     // canvas underneath still runs edge to edge.
     <div className="pointer-events-none absolute safe-area select-none">
+      {/* The speed camera. Keyed on the sequence number so the flash replays
+          rather than being skipped when it fires twice. */}
+      {flashSeq > 0 && (
+        <div key={flashSeq} className="cam-flash absolute -inset-8 bg-white" />
+      )}
+
       {/* speech bubble — labelled, because two of them talk at the station */}
       <div className="absolute inset-x-0 top-3 flex justify-center px-4">
         {dialogue && (
@@ -80,20 +92,24 @@ export default function HUD() {
       {/* The game holds the mouse by default; this only shows once you've taken
           it back with Esc, to say how to hand it over again. */}
       {!touch && !locked && (
-        <div className="absolute inset-x-0 top-[72%] flex justify-center px-4">
+        // High enough that it never lands on the contextual button below it,
+        // which now appears for the gate and the pond as well as for grass.
+        <div className="absolute inset-x-0 top-[62%] flex justify-center px-4">
           <div className="rounded-full bg-black/45 px-5 py-2.5 text-sm font-medium text-white/95 shadow-lg backdrop-blur-sm">
-            Click the field (or press a key) to look with the mouse · Esc frees the cursor
+            Click the field to look with the mouse · Esc frees the cursor
           </div>
         </div>
       )}
 
-      {/* The one contextual action. It goes in the gap between the stick and
-          the buttons: dead centre along the bottom in landscape, and above the
+      {/* The one contextual action — grass, the gate, the scarecrow, the pond.
+          What it says comes from the prompt itself, so adding an interactable
+          never touches this file. It goes in the gap between the stick and the
+          buttons: dead centre along the bottom in landscape, and above the
           buttons in portrait, where the centre of the screen is the cow. */}
-      {canEat && (
+      {canAct && (
         <div
           className={`absolute inset-x-0 flex justify-center px-4 ${
-            !touch ? "bottom-32" : portrait ? "bottom-[14.5rem]" : "bottom-5"
+            !touch ? "bottom-32" : portrait ? "bottom-[17.5rem]" : "bottom-5"
           }`}
         >
           <button
@@ -101,7 +117,7 @@ export default function HUD() {
             className="pointer-events-auto animate-pulse rounded-full bg-amber-300 px-7 py-3.5 text-lg font-bold text-neutral-900 shadow-2xl active:scale-95"
           >
             {!touch && <Key>E</Key>}
-            🌿 Eat the grass
+            {prompt.icon} {prompt.label}
           </button>
         </div>
       )}
@@ -121,6 +137,18 @@ export default function HUD() {
               : "pointer-events-auto absolute bottom-4 right-4 flex flex-row gap-3"
         }
       >
+        {/* Dance is icon-only on touch. Three full-width buttons in a row is
+            384px against the 360px the phone layout is built for, and the
+            stick is already using the other corner. */}
+        <Action
+          emoji={dancing ? "🛑" : "💃"}
+          label={dancing ? "Stop" : "Dance"}
+          hint={touch ? undefined : "R"}
+          big={touch}
+          compact={touch}
+          disabled={inCutscene || (activeGag !== null && !dancing)}
+          onClick={toggleDance}
+        />
         <Action
           emoji="🖐️"
           label="Pet"
@@ -143,10 +171,11 @@ export default function HUD() {
       {touch ? (
         <TouchHints portrait={portrait} fullscreen={fullscreen} />
       ) : (
-        <div className="absolute bottom-4 left-4 hidden rounded-xl bg-black/35 px-3 py-2 text-xs leading-relaxed text-white/90 sm:block">
-          <div><b>WASD</b> / arrows — walk where you&apos;re looking</div>
-          <div><b>Mouse</b> — look around (captured) · <b>Scroll</b> — zoom</div>
-          <div><b>E</b> eat · <b>Q</b> pet · <b>F</b> slap</div>
+        <div
+          className="hint-fade absolute bottom-4 left-4 hidden rounded-xl bg-black/35 px-3 py-2 text-xs leading-relaxed text-white/90 sm:block"
+          style={{ "--hint-ms": "14000ms" } as React.CSSProperties}
+        >
+          <div><b>WASD</b> walk · <b>mouse</b> look · <b>scroll</b> zoom</div>
         </div>
       )}
     </div>
@@ -173,28 +202,25 @@ function ScreenButton({ fullscreen }: { fullscreen: boolean }) {
 }
 
 /**
- * The two things a first-time player needs told, and then never again.
+ * The one thing a first-time player on a phone needs told, told without words.
  *
- * This used to be one permanent banner across the middle of the screen, sitting
- * on top of the cow. Now it is pinned to the corner above the stick and times
- * out on its own — `hint-fade` ends in `visibility: hidden`, so the hints stop
- * swallowing taps as well as stop being visible.
+ * There used to be two banners here — "turn sideways for a wider view" and
+ * "drag the stick to walk, swipe the field to look" — and both of them were
+ * sentences sitting on top of the game asking to be read. The stick and the
+ * buttons explain themselves the moment a thumb lands on them, so the text is
+ * gone; what is left is a phone icon turning itself sideways, which is the one
+ * thing the controls can't demonstrate on their own. It times out too:
+ * `hint-fade` ends in `visibility: hidden`, so it stops swallowing taps as well
+ * as stopping being visible.
  */
 function TouchHints({ portrait, fullscreen }: { portrait: boolean; fullscreen: boolean }) {
+  if (!portrait || fullscreen) return null;
   return (
-    <div className="absolute bottom-[9.5rem] left-4 flex max-w-[60vw] flex-col gap-2">
-      {portrait && !fullscreen && (
-        <div
-          className="hint-fade flex items-center gap-2 rounded-lg bg-black/45 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm"
-          style={{ "--hint-ms": "12000ms" } as React.CSSProperties}
-        >
-          <span className="rotate-hint inline-block">📱</span>
-          <span>Turn sideways for a wider view</span>
-        </div>
-      )}
-      <div className="hint-fade rounded-lg bg-black/35 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm">
-        Drag the stick to walk · swipe the field to look
-      </div>
+    <div
+      className="hint-fade absolute bottom-[10.5rem] left-4 grid h-14 w-14 place-items-center rounded-2xl bg-black/40 text-white backdrop-blur-sm"
+      style={{ "--hint-ms": "14000ms" } as React.CSSProperties}
+    >
+      <RotateHint size={40} />
     </div>
   );
 }
@@ -215,6 +241,7 @@ function Action({
   disabled,
   danger,
   big,
+  compact,
 }: {
   emoji: string;
   label: string;
@@ -223,17 +250,25 @@ function Action({
   disabled?: boolean;
   danger?: boolean;
   big?: boolean;
+  /** Icon only, and square. The label goes into `aria-label` instead. */
+  compact?: boolean;
 }) {
+  const size = compact
+    ? "h-[3.6rem] w-[3.6rem] text-2xl"
+    : big
+      ? "w-[7.5rem] px-3 py-4 text-lg"
+      : "px-5 py-3 text-base";
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center justify-center gap-2 rounded-full font-bold shadow-2xl transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ${
-        big ? "w-[7.5rem] px-3 py-4 text-lg" : "px-5 py-3 text-base"
-      } ${danger ? "bg-red-500 text-white" : "bg-white/95 text-neutral-800"}`}
+      aria-label={compact ? label : undefined}
+      className={`flex items-center justify-center gap-2 rounded-full font-bold shadow-2xl transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ${size} ${
+        danger ? "bg-red-500 text-white" : "bg-white/95 text-neutral-800"
+      }`}
     >
-      <span className="text-xl">{emoji}</span>
-      <span>{label}</span>
+      <span className={compact ? "text-2xl" : "text-xl"}>{emoji}</span>
+      {!compact && <span>{label}</span>}
       {hint && (
         <kbd className={`ml-1 rounded px-1.5 py-0.5 font-mono text-xs ${danger ? "bg-black/25 text-white" : "bg-neutral-900/15 text-neutral-700"}`}>
           {hint}

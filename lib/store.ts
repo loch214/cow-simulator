@@ -1,12 +1,40 @@
 import { create } from "zustand";
-import { ensureAudio, smack, moo, chew, kissJingle, grunt } from "./audio";
-import { gags, insultLines, LIP_MARK_DURATION, SLAP_IMPACT } from "./reactions";
+import { ensureAudio, smack, moo, chew, kissJingle, grunt, creak, slurp, shutter } from "./audio";
+import {
+  bellowLines,
+  danceLines,
+  gags,
+  insultLines,
+  LIP_MARK_DURATION,
+  SLAP_IMPACT,
+} from "./reactions";
 import { kissImpulse, slapImpulse } from "./physics";
 import { addShake } from "./camera";
+import { cowState } from "./cowState";
 import { GRASS, REGROW_MS, SLAPS_BEFORE_POLICE } from "./world";
 import type { Speaker } from "./cutscene";
 
-export type GagId = "eat" | "shy" | "slap";
+export type GagId = "eat" | "shy" | "slap" | "bellow" | "sip" | "dance";
+
+/**
+ * The one contextual action, and what it is currently pointed at.
+ *
+ * There used to be exactly one thing in the world worth walking up to, so
+ * this was a single `nearGrass: number | null`. Now that the gate opens there
+ * are several and they are not all grass, so whatever the cow is standing
+ * next to carries its own label and icon and `interact()` switches on the
+ * kind. Adding an interactable is one case here and one entry in
+ * `nearestPrompt()` in components/Cow.tsx.
+ */
+export type PromptKind = "grass" | "gate" | "scarecrow" | "pond";
+
+export interface Prompt {
+  kind: PromptKind;
+  /** Which one, where there is more than one. Grass uses the tuft id. */
+  id: number;
+  label: string;
+  icon: string;
+}
 
 export interface CowStore {
   /**
@@ -29,6 +57,17 @@ export interface CowStore {
   lipMarkSeq: number;
   slapCount: number;
   /**
+   * Whether the player has thrown the gate open. `cowState.gateOpen` is the
+   * animated 0..1 that the panel and the fence collision read; this is the
+   * discrete intent behind it, and it lives in the store because the HUD has
+   * to re-render when it changes.
+   */
+  gateOpen: boolean;
+  /** Bumped every time the cow bellows at the scarecrow, so it can react. */
+  scareSeq: number;
+  /** Bumped when the speed camera fires, so the screen can flash. */
+  flashSeq: number;
+  /**
    * When the slapping hand started its swing, as `performance.now()`. A
    * timestamp rather than a flag, so a second slap restarts the swing from the
    * top instead of being swallowed while the first one is still in the air.
@@ -38,35 +77,47 @@ export interface CowStore {
   grassEatenAt: (number | null)[];
   /** Id of the grass tuft the cow is close enough to eat, if any. */
   nearGrass: number | null;
+  /** Whatever the cow is standing next to, ready for `interact()`. */
+  prompt: Prompt | null;
 
   start: () => void;
   say: (line: string | null, speaker?: Speaker) => void;
   setNearGrass: (id: number | null) => void;
+  setPrompt: (p: Prompt | null) => void;
   regrow: (id: number) => void;
   interact: () => void;
+  flash: () => void;
   triggerGag: (id: GagId) => void;
+  toggleDance: () => void;
   startCutscene: () => void;
   endCutscene: () => void;
 }
 
 let timeouts: ReturnType<typeof setTimeout>[] = [];
-let lastInsult = -1;
+const lastLine: Record<string, number> = {};
 
 function clearScheduled() {
   timeouts.forEach(clearTimeout);
   timeouts = [];
 }
 
-function pickInsult(): string {
-  let i = Math.floor(Math.random() * insultLines.length);
-  if (insultLines.length > 1) {
-    while (i === lastInsult) i = Math.floor(Math.random() * insultLines.length);
+const POOLS = { insult: insultLines, bellow: bellowLines, dance: danceLines };
+
+/** A line from a pool, never the same one twice running. */
+function pickLine(pool: keyof typeof POOLS): string {
+  const lines = POOLS[pool];
+  let i = Math.floor(Math.random() * lines.length);
+  if (lines.length > 1) {
+    while (i === lastLine[pool]) i = Math.floor(Math.random() * lines.length);
   }
-  lastInsult = i;
-  return insultLines[i];
+  lastLine[pool] = i;
+  return lines[i];
 }
 
-const sounds = { smack, moo, chew, kiss: kissJingle, grunt };
+const sounds = { smack, moo, chew, kiss: kissJingle, grunt, creak, slurp };
+
+/** What the cow has to say about being photographed. */
+const TICKET = "Three miles an hour. In a two zone.";
 
 export const useCowStore = create<CowStore>((set, get) => {
   if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
@@ -83,8 +134,12 @@ export const useCowStore = create<CowStore>((set, get) => {
     lipMarkSeq: 0,
     slapCount: 0,
     slapAt: 0,
+    gateOpen: false,
+    scareSeq: 0,
+    flashSeq: 0,
     grassEatenAt: GRASS.map(() => null),
     nearGrass: null,
+    prompt: null,
 
     // The tap on the title card. Audio is unlocked here and nowhere else that
     // matters: this is the one moment we are guaranteed to be inside a gesture.
@@ -100,6 +155,15 @@ export const useCowStore = create<CowStore>((set, get) => {
       if (get().nearGrass !== id) set({ nearGrass: id });
     },
 
+    // Called every frame from `drive()`, so it has to be a no-op unless the
+    // prompt actually changed — otherwise the whole HUD re-renders at 60fps.
+    setPrompt: (p) => {
+      const cur = get().prompt;
+      if (cur === p) return;
+      if (cur && p && cur.kind === p.kind && cur.id === p.id) return;
+      set({ prompt: p });
+    },
+
     regrow: (id) => {
       const next = [...get().grassEatenAt];
       if (next[id] === null) return;
@@ -107,20 +171,56 @@ export const useCowStore = create<CowStore>((set, get) => {
       set({ grassEatenAt: next });
     },
 
-    // The single contextual action, bound to E. Right now the only thing in the
-    // pen worth walking up to is grass; new interactables slot in here.
+    // The single contextual action, bound to E. Whatever the cow is standing
+    // next to decides what it does.
     interact: () => {
       const s = get();
       if (!s.started || s.activeGag || s.inCutscene) return;
-      const id = s.nearGrass;
-      if (id === null || s.grassEatenAt[id] !== null) return;
+      const p = s.prompt;
+      if (!p) return;
 
-      const eaten = [...s.grassEatenAt];
-      eaten[id] = Date.now();
-      set({ grassEatenAt: eaten, nearGrass: null });
-      const timeout = setTimeout(() => get().regrow(id), REGROW_MS);
-      timeouts.push(timeout);
-      get().triggerGag("eat");
+      switch (p.kind) {
+        case "grass": {
+          if (s.grassEatenAt[p.id] !== null) return;
+          const eaten = [...s.grassEatenAt];
+          eaten[p.id] = Date.now();
+          set({ grassEatenAt: eaten, nearGrass: null, prompt: null });
+          timeouts.push(setTimeout(() => get().regrow(p.id), REGROW_MS));
+          get().triggerGag("eat");
+          return;
+        }
+        case "gate":
+          ensureAudio();
+          creak();
+          set({ gateOpen: !s.gateOpen, prompt: null });
+          return;
+        case "scarecrow":
+          get().triggerGag("bellow");
+          return;
+        case "pond":
+          get().triggerGag("sip");
+          return;
+      }
+    },
+
+    /**
+     * The speed camera going off. Rate-limited by the caller rather than
+     * here, because `drive()` tests the trigger every frame and the cow
+     * running past would otherwise be issued sixty tickets a second.
+     */
+    flash: () => {
+      const s = get();
+      if (!s.started || s.inCutscene) return;
+      ensureAudio();
+      shutter();
+      addShake(0.18);
+      const line = TICKET;
+      set({ flashSeq: s.flashSeq + 1, dialogue: line, speaker: "cow" });
+      timeouts.push(
+        setTimeout(() => {
+          if (get().dialogue === line) set({ dialogue: null });
+        }, 3400)
+      );
     },
 
     triggerGag: (id) => {
@@ -172,9 +272,10 @@ export const useCowStore = create<CowStore>((set, get) => {
       for (const step of gag.script) {
         const timeout = setTimeout(() => {
           if (step.sound) sounds[step.sound]();
-          if (step.say || step.dynamicSay) {
+          if (step.scare) set({ scareSeq: get().scareSeq + 1 });
+          if (step.say || step.pool) {
             set({
-              dialogue: step.dynamicSay ? pickInsult() : step.say ?? null,
+              dialogue: step.pool ? pickLine(step.pool) : step.say ?? null,
               speaker: "cow",
             });
           }
@@ -194,13 +295,34 @@ export const useCowStore = create<CowStore>((set, get) => {
       timeouts.push(end);
     },
 
+    /**
+     * The dance button. A toggle rather than a fire-and-forget gag, because
+     * nine seconds of cow is a long time to be locked out of your own controls
+     * — and because the obvious thing to do with a dance button is press it
+     * again.
+     */
+    toggleDance: () => {
+      const s = get();
+      if (!s.started || s.inCutscene) return;
+      if (s.activeGag === "dance") {
+        clearScheduled();
+        set({ activeGag: null, dialogue: null });
+        return;
+      }
+      if (s.activeGag) return; // busy being petted or slapped
+      get().triggerGag("dance");
+    },
+
     startCutscene: () => {
       clearScheduled();
       set({ inCutscene: true, activeGag: null, dialogue: null, showLipMark: false });
     },
 
     endCutscene: () => {
-      set({ inCutscene: false, slapCount: 0 });
+      // The cow shut the gate behind itself on the way back in, so the
+      // player's switch has to agree with the panel or the next press of E
+      // looks like it did nothing.
+      set({ inCutscene: false, slapCount: 0, gateOpen: cowState.gateOpen > 0.5 });
       // let the parting line hang for a beat before clearing it
       const timeout = setTimeout(() => set({ dialogue: null }), 2200);
       timeouts.push(timeout);

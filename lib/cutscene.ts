@@ -14,7 +14,7 @@
 import { addPoses, Pose, PoseKey, samplePose } from "./poses";
 import { bipedWalk, standPose } from "./locomotion";
 import { approach, cowState, turnToward } from "./cowState";
-import { OFFICER, WAYPOINTS } from "./world";
+import { OFFICER, PIT_RADIUS, WAYPOINTS } from "./world";
 
 export type Phase =
   | "rise"
@@ -277,13 +277,21 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
   switch (runner.phase) {
     case "rise":
       cowState.speed = 0;
-      faceToward(WAYPOINTS.gateInside.x, WAYPOINTS.gateInside.z, dt);
+      if (cowState.outside) {
+        faceToward(WAYPOINTS.stationFront.x, WAYPOINTS.stationFront.z, dt);
+      } else {
+        faceToward(WAYPOINTS.gateInside.x, WAYPOINTS.gateInside.z, dt);
+      }
       cowState.stand = approach(cowState.stand, 1, dt / 0.9);
       if (runner.said < 0) {
         runner.said = 0;
         speak("Right. RIGHT. That's it.");
       }
-      if (cowState.stand >= 1 && runner.t > 900 && quiet()) next("toGate");
+      // The player can let the cow out now, so it may already be in the field
+      // when the fifth slap lands. No point walking back in to walk out again.
+      if (cowState.stand >= 1 && runner.t > 900 && quiet()) {
+        next(cowState.outside ? "toStation" : "toGate");
+      }
       break;
 
     case "toGate":
@@ -337,6 +345,14 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
     }
 
     case "backToGate":
+      // The player may have shut the gate behind themselves before the fifth
+      // slap landed, in which case the cow would walk home through a closed
+      // one. It has the whole length of the road to swing it open, so this just
+      // runs the whole way back rather than needing a phase of its own.
+      // `runner.t` is incremented at the top of the step, so this is exactly
+      // the first frame of the phase — one creak, not one per frame.
+      if (runner.t <= ms && cowState.gateOpen < 0.5) sound = "creak";
+      cowState.gateOpen = approach(cowState.gateOpen, 1, dt / 0.7);
       if (runner.t > 300 && runner.said < 0) {
         runner.said = 0;
         speak("They're looking into it.");
@@ -380,6 +396,12 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
       cowState.speed = 0;
       break;
   }
+
+  // The scripted walk goes through the gateway rather than round the fence, so
+  // which side of it the cow is on has to be kept up to date here too —
+  // otherwise free roam resumes convinced the cow is on the wrong side and
+  // shoves it through the rails.
+  cowState.outside = Math.hypot(cowState.x, cowState.z) > PIT_RADIUS;
 
   const layers: Pose[] = [standPose(cowState.stand)];
   if (cowState.speed > 0.01) layers.push(bipedWalk(cowState.walkPhase, cowState.stand));

@@ -3,9 +3,11 @@
 
 import { addLook, addZoom, cam, MOUSE_SENS, setZoom, TOUCH_SENS } from "./camera";
 
+export type Action = "pet" | "slap" | "dance";
+
 const held = new Set<string>();
 const interactHandlers = new Set<() => void>();
-const actionHandlers = new Set<(action: "pet" | "slap") => void>();
+const actionHandlers = new Set<(action: Action) => void>();
 let listening = 0;
 
 /** Set by the on-screen stick. Merged with the keyboard so both always work. */
@@ -21,11 +23,18 @@ const MOVE_KEYS: Record<string, "fwd" | "back" | "left" | "right"> = {
   KeyD: "right", ArrowRight: "right",
 };
 
+/** The three things you can do to the cow, and the keys that do them. */
+const ACTION_KEYS: Record<string, Action> = {
+  KeyQ: "pet",
+  KeyF: "slap",
+  KeyR: "dance",
+};
+
 function onKeyDown(e: KeyboardEvent) {
   // The mouse belongs to the game by default. Pointer lock can only be asked for
   // from inside a real user gesture, so the first key you press takes it back
   // after Esc without you having to click anything.
-  if (e.code in MOVE_KEYS || e.code === "KeyE" || e.code === "KeyQ" || e.code === "KeyF") {
+  if (e.code in MOVE_KEYS || e.code in ACTION_KEYS || e.code === "KeyE") {
     requestLock();
   }
   if (e.code in MOVE_KEYS) {
@@ -34,8 +43,8 @@ function onKeyDown(e: KeyboardEvent) {
   }
   if (e.repeat) return;
   if (e.code === "KeyE") interactHandlers.forEach((h) => h());
-  if (e.code === "KeyQ") actionHandlers.forEach((h) => h("pet"));
-  if (e.code === "KeyF") actionHandlers.forEach((h) => h("slap"));
+  const action = ACTION_KEYS[e.code];
+  if (action) actionHandlers.forEach((h) => h(action));
 }
 
 function onKeyUp(e: KeyboardEvent) {
@@ -70,7 +79,7 @@ export function onInteract(handler: () => void): () => void {
   return () => { interactHandlers.delete(handler); };
 }
 
-export function onAction(handler: (action: "pet" | "slap") => void): () => void {
+export function onAction(handler: (action: Action) => void): () => void {
   actionHandlers.add(handler);
   return () => { actionHandlers.delete(handler); };
 }
@@ -142,8 +151,39 @@ export function requestLock() {
  */
 export function attachLook(el: HTMLElement): () => void {
   const drags = new Map<number, { x: number; y: number }>();
-  let pinchStart = 0;
-  let pinchDist = 0;
+
+  /**
+   * The pinch in progress, if any: which two pointers it is measured between,
+   * how far apart they were when it started, and the zoom level it started
+   * from.
+   *
+   * This used to be two loose numbers armed the instant a second finger
+   * touched the field, and it was the reason the camera "zoomed by itself":
+   * rest a second thumb anywhere while looking around with the first and the
+   * next move rescaled the zoom by `startDist / currentDist`. Two fingers a
+   * centimetre apart gave a ratio of five or six, so the camera slammed
+   * straight out to its limit and back in again as they separated. A pinch now
+   * has to look like a pinch before it counts.
+   */
+  let pinch: { a: number; b: number; span: number; from: number } | null = null;
+
+  /** Two fingers closer together than this are a fumble, not a gesture. */
+  const PINCH_MIN = 44;
+  /** How much they have to squeeze before anything happens, as a fraction. */
+  const PINCH_DEAD = 0.08;
+
+  /** The first two live pointers, in the order they arrived. */
+  const pair = (): [number, number] | null => {
+    const ids = [...drags.keys()];
+    return ids.length >= 2 ? [ids[0], ids[1]] : null;
+  };
+
+  const span = ([a, b]: [number, number]): number => {
+    const pa = drags.get(a);
+    const pb = drags.get(b);
+    if (!pa || !pb) return 0;
+    return Math.hypot(pa.x - pb.x, pa.y - pb.y);
+  };
 
   const onPointerDown = (e: PointerEvent) => {
     if (e.pointerType === "touch") markTouch();
@@ -161,10 +201,6 @@ export function attachLook(el: HTMLElement): () => void {
       }
     }
     drags.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (drags.size === 2) {
-      pinchDist = twoFingerDistance(drags);
-      pinchStart = cam.dist;
-    }
   };
 
   const onPointerMove = (e: PointerEvent) => {
@@ -179,9 +215,20 @@ export function attachLook(el: HTMLElement): () => void {
     prev.x = e.clientX;
     prev.y = e.clientY;
 
-    if (drags.size >= 2) {
-      const d = twoFingerDistance(drags);
-      if (pinchDist > 0) setZoom(pinchStart * (pinchDist / d));
+    const two = pair();
+    if (two) {
+      const now = span(two);
+      if (!pinch) {
+        // Arm it only once the fingers are properly apart. Until then this is
+        // two thumbs on the screen, which is not a request for anything.
+        if (now >= PINCH_MIN) pinch = { a: two[0], b: two[1], span: now, from: cam.dist };
+      } else if (now > 0) {
+        // Dead zone, so the pair drifting a few pixels while the player looks
+        // around cannot nudge the zoom at all.
+        let ratio = pinch.span / now;
+        ratio = ratio > 1 ? Math.max(1, ratio - PINCH_DEAD) : Math.min(1, ratio + PINCH_DEAD);
+        setZoom(pinch.from * ratio);
+      }
       return;
     }
     addLook(dx, dy, e.pointerType === "touch" ? TOUCH_SENS : MOUSE_SENS);
@@ -189,12 +236,20 @@ export function attachLook(el: HTMLElement): () => void {
 
   const onPointerUp = (e: PointerEvent) => {
     drags.delete(e.pointerId);
-    if (drags.size < 2) pinchDist = 0;
+    // Any pinch that loses one of its own two fingers is over. Rearming on the
+    // remaining pair mid-gesture is what made a three-finger fumble jump.
+    if (pinch && (e.pointerId === pinch.a || e.pointerId === pinch.b)) pinch = null;
+    if (drags.size < 2) pinch = null;
   };
 
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    addZoom(e.deltaY * 0.004);
+    // `deltaY` means different things depending on `deltaMode`: pixels, lines
+    // or pages. Untranslated, one notch of a page-mode wheel is a hundred
+    // times one notch of a pixel-mode one. And the clamp is for inertial
+    // trackpads, which deliver a single enormous delta at the end of a fling.
+    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    addZoom(Math.max(-120, Math.min(120, px)) * 0.004);
   };
 
   const onLockChange = () => {
@@ -225,11 +280,6 @@ export function attachLook(el: HTMLElement): () => void {
     if (lockTarget === el) lockTarget = null;
     if (document.pointerLockElement === el) document.exitPointerLock?.();
   };
-}
-
-function twoFingerDistance(drags: Map<number, { x: number; y: number }>): number {
-  const [a, b] = [...drags.values()];
-  return Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
 }
 
 const lockListeners = new Set<(locked: boolean) => void>();

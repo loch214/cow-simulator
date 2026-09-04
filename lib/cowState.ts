@@ -19,6 +19,13 @@ export const cowState = {
   stand: 0,
   /** 0 = gate shut, 1 = gate swung wide. */
   gateOpen: 0,
+  /**
+   * Which side of the fence the cow is on. A ring with a gap in it can't be
+   * enforced by distance alone — "too far out" and "too far in" are the same
+   * test from opposite sides — so the fence code needs to know where the cow
+   * came from. See `resolveFence` in lib/world.ts.
+   */
+  outside: false,
   /** 0 = calm, 1 = just been slapped. Fades out; drives brows, ears and tail. */
   anger: 0,
 };

@@ -8,9 +8,12 @@ export interface Keyframe {
 export interface ScriptStep {
   t: number; // ms from gag start
   say?: string;
-  dynamicSay?: boolean; // store fills `say` from a line pool
-  sound?: "smack" | "moo" | "chew" | "kiss" | "grunt";
+  /** Store fills `say` from the named pool, so the line differs each time. */
+  pool?: "insult" | "bellow" | "dance";
+  sound?: "smack" | "moo" | "chew" | "kiss" | "grunt" | "creak" | "slurp";
   lips?: boolean; // stamp the lip mark on the screen
+  /** Bumped counter the scarecrow watches, so a bellow knocks its hat off. */
+  scare?: boolean;
 }
 
 export interface GagDef {
@@ -196,6 +199,36 @@ export function kissAmount(elapsed: number): number {
   return 0;
 }
 
+/**
+ * A full-chested bellow: weight back, chin up, mouth open. Used on anything
+ * outside the pen that deserves to be shouted at, which so far is a scarecrow.
+ */
+const BELLOW: Pose = {
+  head: { rot: [-0.52, 0, 0], pos: [0, 0.07, 0.03] },
+  jaw: { rot: [0.34, 0, 0] },
+  earL: { rot: [-0.3, 0, 0.2] },
+  earR: { rot: [-0.3, 0, -0.2] },
+  body: { pos: [0, 0, -0.06], rot: [-0.06, 0, 0] },
+  legFL: { rot: [0.1, 0, 0] },
+  legFR: { rot: [0.1, 0, 0] },
+  tail: { rot: [-0.3, 0, 0] },
+};
+
+/**
+ * Head right down to the water. Deeper than grazing, not shallower: the pond
+ * surface sits at y=0.05 and the grass it would otherwise be eating is half a
+ * metre tall, so a graze-depth dip leaves the muzzle drinking fresh air.
+ */
+const DRINK: Pose = {
+  head: { rot: [1.16, 0, 0], pos: [0, -0.55, 0.05] },
+  jaw: { rot: [0.06, 0, 0] },
+  earL: { rot: [-0.1, 0, 0.4] },
+  earR: { rot: [-0.1, 0, -0.4] },
+  body: { pos: [0, -0.03, 0.04], rot: [0.04, 0, 0] },
+  legFL: { rot: [0.14, 0, 0] },
+  legFR: { rot: [0.1, 0, 0] },
+};
+
 export const gags: Record<string, GagDef> = {
   // Triggered by walking onto a grass tuft and pressing E.
   eat: {
@@ -270,10 +303,89 @@ export const gags: Record<string, GagDef> = {
     script: [
       { t: SLAP_IMPACT, sound: "smack" },
       { t: SLAP_IMPACT + 90, sound: "grunt" },
-      { t: 980, dynamicSay: true },
+      { t: 980, pool: "insult" },
+    ],
+  },
+  // Shouted at the scarecrow. The gag itself is two seconds of noise; what it
+  // is shouting AT is the store's problem.
+  bellow: {
+    id: "bellow",
+    duration: 2200,
+    keyframes: [
+      { t: 0, pose: {} },
+      { t: 260, pose: BELLOW },
+      { t: 1150, pose: BELLOW },
+      { t: 1500, pose: { head: { rot: [-0.12, 0, 0] } } },
+      { t: 2100, pose: {} },
+    ],
+    script: [
+      { t: 200, sound: "moo" },
+      { t: 320, scare: true },
+      { t: 1300, pool: "bellow" },
+    ],
+  },
+
+  /**
+   * On request. Unlike every other gag this one has NO keyframes worth
+   * sampling: `Cow.tsx` recognises it by id and hands the body to
+   * `dancePose()` in lib/dance.ts, which is the same routine the title card
+   * runs — springs, follow-through and all. Keyframing a second, worse dance
+   * next to that one would have been the wrong move.
+   *
+   * The single empty keyframe is there because `samplePose` needs a track to
+   * read and `triggerGag` needs a `duration`.
+   */
+  dance: {
+    id: "dance",
+    duration: 9200, // the sway loop is 3.0s, so three times round and out
+    keyframes: [{ t: 0, pose: {} }],
+    script: [
+      { t: 500, sound: "moo" },
+      { t: 900, pool: "dance" },
+      { t: 4400, sound: "moo" },
+    ],
+  },
+
+  // A drink at the pond.
+  sip: {
+    id: "sip",
+    duration: 3600,
+    keyframes: [
+      { t: 0, pose: {} },
+      { t: 420, pose: DRINK },
+      { t: 900, pose: DRINK },
+      { t: 1400, pose: DRINK },
+      { t: 1900, pose: DRINK },
+      { t: 2400, pose: DRINK },
+      { t: 2800, pose: {} },
+      { t: 3100, pose: { head: { rot: [-0.16, 0, 0] }, jaw: { rot: [0.1, 0, 0] } } },
+      { t: 3550, pose: {} },
+    ],
+    script: [
+      { t: 500, sound: "slurp" },
+      { t: 1200, sound: "slurp" },
+      { t: 1900, sound: "slurp" },
+      { t: 2900, say: "Tastes like frog. Ten out of ten." },
     ],
   },
 };
+
+/** Said on the way up into the dance. It did not need asking twice. */
+export const danceLines = [
+  "Oh, you want the dance? Fine.",
+  "Watch the hooves.",
+  "This is a limited engagement.",
+  "You have no idea how hard this is on four legs.",
+  "Nobody asked, but here we are.",
+];
+
+/** What the cow shouts at a scarecrow. It is not a conversation. */
+export const bellowLines = [
+  "MOOOO! …Nothing. Coward.",
+  "It flinched. You saw that.",
+  "That's right. Keep still.",
+  "Straw man. Literally.",
+];
 
 export const insultLines = [
   "Try doing that again.",

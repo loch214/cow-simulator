@@ -9,6 +9,7 @@ import Pit from "./Pit";
 import GrassPatches from "./Grass";
 import PoliceStation from "./PoliceStation";
 import Environment from "./Environment";
+import Outside from "./Outside";
 import { useCowStore } from "@/lib/store";
 import { cowState } from "@/lib/cowState";
 import { cam, frame, framedOffset, easeBehind, resetBehind, stepShake } from "@/lib/camera";
@@ -52,6 +53,7 @@ export default function Scene() {
       <SunLight />
 
       <Environment />
+      <Outside />
       <Pit />
       <GrassPatches />
       <Cow />
@@ -85,27 +87,51 @@ const DESIGN_HFOV = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(DESIGN_FOV) 
 const FOV_CAP = 64;
 const DIST_CAP = 1.6;
 
+/**
+ * How much the viewport has to change shape before the framing is allowed to
+ * move at all. A phone's dynamic viewport height changes on its own as the
+ * browser's chrome slides in and out, and reframing on every one of those was
+ * one of the two things that made the camera look like it was zooming by
+ * itself.
+ */
+const ASPECT_DEAD = 0.04;
+
 function FrameRig() {
   // Recomputed from inside the frame loop rather than an effect, because the
   // camera is the render loop's to mutate — the same reason `CameraRig` below
-  // writes to it there. The ref makes it a no-op on every frame but the ones
-  // where the window actually changed shape.
+  // writes to it there.
   const lastAspect = useRef(0);
+  const want = useRef({ fov: DESIGN_FOV, scale: 1 });
 
-  useFrame(({ camera, size }) => {
-    const aspect = size.width / Math.max(1, size.height);
-    if (Math.abs(aspect - lastAspect.current) < 0.001) return;
-    lastAspect.current = aspect;
-
+  useFrame(({ camera, size }, delta) => {
     const lens = camera as THREE.PerspectiveCamera;
-    const wanted = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(DESIGN_HFOV / 2) / aspect));
-    lens.fov = THREE.MathUtils.clamp(wanted, DESIGN_FOV, FOV_CAP);
-    lens.updateProjectionMatrix();
+    const aspect = size.width / Math.max(1, size.height);
+    const first = lastAspect.current === 0;
 
-    // What we ended up with across, after the cap — and so how much further
-    // back the camera has to stand to make up the difference.
-    const got = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(lens.fov) / 2) * aspect);
-    frame.distScale = THREE.MathUtils.clamp(DESIGN_HFOV / got, 1, DIST_CAP);
+    // Recompute the target, but only when the shape has really changed. The
+    // targets are held in a ref rather than derived every frame so that a
+    // viewport wobbling inside the dead zone leaves the framing exactly alone
+    // rather than easing towards a slightly different one.
+    if (first || Math.abs(aspect - lastAspect.current) / aspect > ASPECT_DEAD) {
+      lastAspect.current = aspect;
+      const wanted = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(DESIGN_HFOV / 2) / aspect));
+      const fov = THREE.MathUtils.clamp(wanted, DESIGN_FOV, FOV_CAP);
+      // What we ended up with across, after the cap — and so how much further
+      // back the camera has to stand to make up the difference.
+      const got = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(fov) / 2) * aspect);
+      want.current = { fov, scale: THREE.MathUtils.clamp(DESIGN_HFOV / got, 1, DIST_CAP) };
+    }
+
+    // Rotating a phone swings the framing a long way — 64 degrees and 1.6x out
+    // in portrait against 45 and 1x in landscape — and snapping between the
+    // two reads as the camera lurching. Easing over about a quarter of a second
+    // makes the same change read as a move.
+    const k = first ? 1 : 1 - Math.pow(0.02, Math.min(delta, 0.05));
+    frame.distScale += (want.current.scale - frame.distScale) * k;
+    if (Math.abs(lens.fov - want.current.fov) > 0.005) {
+      lens.fov += (want.current.fov - lens.fov) * k;
+      lens.updateProjectionMatrix();
+    }
   });
 
   return null;

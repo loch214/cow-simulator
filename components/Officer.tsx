@@ -95,6 +95,55 @@ const SHIN_TILT = -0.16;
 /** What the boot has to undo to sit flat on the ground. */
 const FOOT_LEVEL = -(THIGH_TILT + SHIN_TILT);
 
+/**
+ * The skull, as the rings it is lofted from — and the single source of truth
+ * for where his face is.
+ *
+ * The head mesh is stood up by a `[-PI/2, 0, 0]` wrapper, which swings the
+ * loft's +z spine to +y and turns each ring's `y` offset into **minus z** in
+ * head space. That one sign is why every feature on his face used to be a
+ * centimetre or two inside his head: the eyes, the moustache and the mouth were
+ * all placed at z ≈ 0.1 by eye, and the surface they were meant to sit on is at
+ * z ≈ 0.13. He had no face at all — from the front you were looking at a bald
+ * egg with a nose-tip poking out of it. `faceZ` below solves for the surface so
+ * nothing has to be guessed again.
+ */
+const SKULL_RINGS = [
+  { z: -0.12, y: 0, rx: 0.108, ry: 0.112 },
+  { z: -0.02, y: 0.006, rx: 0.132, ry: 0.134 },
+  { z: 0.06, y: -0.014, rx: 0.126, ry: 0.128 },
+  { z: 0.125, y: -0.045, rx: 0.098, ry: 0.098 },
+  { z: 0.152, y: -0.07, rx: 0.068, ry: 0.062 },
+];
+
+/** The skull's cross-section at head height `y`, in head-space terms. */
+function skullAt(y: number) {
+  const r = SKULL_RINGS;
+  let i = 0;
+  while (i < r.length - 2 && y > r[i + 1].z) i++;
+  const a = r[i];
+  const b = r[i + 1];
+  const f = Math.max(0, Math.min(1, (y - a.z) / (b.z - a.z)));
+  return {
+    // the loft's ring `y` becomes -z once the head is stood up
+    cz: -(a.y + (b.y - a.y) * f),
+    rx: a.rx + (b.rx - a.rx) * f,
+    rz: a.ry + (b.ry - a.ry) * f,
+  };
+}
+
+/** How far forward the face is at (`x`, `y`). Everything on it is placed off this. */
+function faceZ(x: number, y: number): number {
+  const s = skullAt(y);
+  const t = Math.min(1, Math.abs(x) / s.rx);
+  return s.cz + s.rz * Math.sqrt(Math.max(0, 1 - t * t));
+}
+
+/** How far out the side of the head is at height `y`. */
+function faceX(y: number): number {
+  return skullAt(y).rx;
+}
+
 const officerGeo = {
   /**
    * Belt line at z=0, shoulders at z=0.66 — and the widest ring is the second
@@ -115,40 +164,47 @@ const officerGeo = {
       { radial: 20, segments: 28, square: 0.28 }
     ),
   /** Round, jowly, and set on a neck that is barely a neck. */
-  skull: () =>
-    loft(
-      [
-        { z: -0.12, y: 0, rx: 0.108, ry: 0.112 },
-        { z: -0.02, y: 0.006, rx: 0.132, ry: 0.134 },
-        { z: 0.06, y: -0.014, rx: 0.126, ry: 0.128 },
-        { z: 0.125, y: -0.045, rx: 0.098, ry: 0.098 },
-        { z: 0.152, y: -0.07, rx: 0.068, ry: 0.062 },
-      ],
-      { radial: 18, segments: 22 }
-    ),
+  skull: () => loft(SKULL_RINGS, { radial: 18, segments: 22 }),
   /**
    * The stab vest. It starts at the bottom of the ribs and gives up there: the
    * gut below it is in shirt, which is the joke and also what a stab vest does
    * on somebody this shape.
+   *
+   * It also has to be measurably FATTER than the torso underneath it, not
+   * roughly the same size. The belly scales up to about 1.065 across and 1.086
+   * deep as he breathes, and the old vest was inside that on the chest and dead
+   * level with it front and back — so the shirt came through it and he read as a
+   * man in a light blue jumper with a yellow belt.
    */
   vest: () =>
     loft(
       [
-        { z: 0.3, y: -0.03, rx: 0.268, ry: 0.212 },
-        { z: 0.4, y: -0.02, rx: 0.272, ry: 0.208 },
-        { z: 0.54, y: 0.004, rx: 0.256, ry: 0.176 },
-        { z: 0.64, y: 0.006, rx: 0.228, ry: 0.158 },
-        { z: 0.68, y: 0.006, rx: 0.19, ry: 0.135 },
+        { z: 0.36, y: -0.026, rx: 0.298, ry: 0.238 },
+        { z: 0.44, y: -0.014, rx: 0.3, ry: 0.234 },
+        { z: 0.55, y: 0.002, rx: 0.286, ry: 0.204 },
+        { z: 0.64, y: 0.006, rx: 0.252, ry: 0.178 },
+        { z: 0.685, y: 0.006, rx: 0.208, ry: 0.15 },
       ],
-      { radial: 20, segments: 24, square: 0.34 }
+      { radial: 20, segments: 26, square: 0.34 }
     ),
   hiVis: () =>
     loft(
       [
-        { z: 0.44, y: -0.014, rx: 0.266, ry: 0.196 },
-        { z: 0.51, y: -0.004, rx: 0.264, ry: 0.19 },
+        { z: 0.45, y: -0.012, rx: 0.306, ry: 0.238 },
+        { z: 0.52, y: -0.002, rx: 0.3, ry: 0.226 },
       ],
       { radial: 20, segments: 4, caps: false, square: 0.34 }
+    ),
+  /** The belt, slung under the gut. A ring, not a slab bolted across him. */
+  belt: () =>
+    loft(
+      [
+        { z: -0.05, y: -0.02, rx: 0.238, ry: 0.2 },
+        { z: 0.0, y: -0.03, rx: 0.258, ry: 0.216 },
+        { z: 0.06, y: -0.036, rx: 0.262, ry: 0.218 },
+        { z: 0.1, y: -0.032, rx: 0.244, ry: 0.204 },
+      ],
+      { radial: 20, segments: 20, caps: false, square: 0.3 }
     ),
   // Short and thick. The forearm barely tapers, which is what stops a fat arm
   // reading as a thin arm with a loose sleeve on it.
@@ -246,6 +302,7 @@ export default function Officer() {
       torso: officerGeo.torso(),
       vest: officerGeo.vest(),
       hiVis: officerGeo.hiVis(),
+      belt: officerGeo.belt(),
       skull: officerGeo.skull(),
       upperArm: officerGeo.upperArm(),
       foreArm: officerGeo.foreArm(),
@@ -255,7 +312,7 @@ export default function Officer() {
       elbow: officerGeo.elbow(),
       knee: officerGeo.knee(),
       fist: officerGeo.fist(),
-      nose: lumpGeometry(1717, 0.036, 0.14, 1),
+      nose: lumpGeometry(1717, 0.034, 0.1, 2, true),
       donut: donutGeo(),
     }),
     []
@@ -458,17 +515,19 @@ export default function Officer() {
               </mesh>
             ))}
             {/* Belt kit, slung UNDER the gut rather than round the waist. There
-                is no waist to put it round. */}
-            <mesh position={[0, -0.03, 0.01]} material={mats.belt}>
-              <boxGeometry args={[0.47, 0.1, 0.4]} />
+                is no waist to put it round. It follows the shape of him — a
+                straight slab across a round belly leaves four corners hanging
+                in the air. */}
+            <group rotation={up}>
+              <mesh geometry={geo.belt} material={mats.belt} castShadow />
+            </group>
+            <mesh position={[0, -0.028, 0.226]} material={mats.chrome}>
+              <boxGeometry args={[0.09, 0.072, 0.026]} />
             </mesh>
-            <mesh position={[0, -0.03, 0.23]} material={mats.chrome}>
-              <boxGeometry args={[0.09, 0.075, 0.02]} />
-            </mesh>
-            <mesh position={[-0.23, -0.02, 0.04]} material={mats.belt} castShadow>
+            <mesh position={[-0.238, -0.03, 0.055]} rotation={[0, 0.3, 0]} material={mats.belt} castShadow>
               <boxGeometry args={[0.07, 0.17, 0.09]} />
             </mesh>
-            <mesh position={[0.23, -0.01, 0.04]} material={mats.chrome}>
+            <mesh position={[0.238, -0.02, 0.055]} rotation={[0, -0.3, 0]} material={mats.chrome}>
               <boxGeometry args={[0.05, 0.12, 0.05]} />
             </mesh>
             {/* radio on the shoulder, aerial and all */}
@@ -544,85 +603,101 @@ export default function Officer() {
               <group rotation={[-Math.PI / 2, 0, 0]}>
                 <mesh geometry={geo.skull} material={mats.skin} castShadow />
               </group>
-              {/* jowls, which is where the weight shows first */}
+              {/* jowls, which is where the weight shows first. They have to
+                  stand PROUD of the side of the head, not sit level with it. */}
               {[-1, 1].map((s) => (
                 <mesh
                   key={s}
-                  position={[s * 0.105, -0.05, 0.045]}
+                  position={[s * (faceX(-0.05) - 0.014), -0.052, 0.052]}
                   scale={[0.78, 0.95, 0.95]}
                   material={mats.skin}
                   castShadow
                 >
-                  <sphereGeometry args={[0.062, 12, 10]} />
+                  <sphereGeometry args={[0.066, 12, 10]} />
                 </mesh>
               ))}
               {/* jaw, hinged at the ears, with the second chin under it */}
               <group ref={jawRef} position={[0, -0.03, -0.02]}>
-                <mesh position={[0, -0.055, 0.05]} scale={[1.05, 0.72, 1.05]} material={mats.skin} castShadow>
-                  <sphereGeometry args={[0.09, 14, 10]} />
-                </mesh>
-                <mesh position={[0, -0.1, 0.02]} scale={[1.15, 0.62, 1.05]} material={mats.skin} castShadow>
-                  <sphereGeometry args={[0.082, 14, 10]} />
-                </mesh>
-                <mesh position={[0, -0.028, 0.112]} material={mats.mouth}>
-                  <boxGeometry args={[0.05, 0.012, 0.014]} />
-                </mesh>
-                {/* the moustache, which is doing a lot of the work here */}
                 <mesh
-                  position={[0, 0.006, 0.108]}
+                  position={[0, -0.05, faceZ(0, -0.08) - 0.03]}
+                  scale={[1.02, 0.72, 1.05]}
+                  material={mats.skin}
+                  castShadow
+                >
+                  <sphereGeometry args={[0.092, 14, 10]} />
+                </mesh>
+                <mesh
+                  position={[0, -0.098, faceZ(0, -0.128) - 0.05]}
+                  scale={[1.15, 0.62, 1.05]}
+                  material={mats.skin}
+                  castShadow
+                >
+                  <sphereGeometry args={[0.084, 14, 10]} />
+                </mesh>
+                <mesh position={[0, -0.026, faceZ(0, -0.056) + 0.006]} material={mats.mouth}>
+                  <boxGeometry args={[0.056, 0.011, 0.016]} />
+                </mesh>
+                {/* The moustache, which is doing a lot of the work here. It has
+                    to sit UNDER the nose and no lower: dropped to the chin it
+                    stops being a moustache and becomes a goatee on a bald egg. */}
+                <mesh
+                  position={[0, 0.016, faceZ(0, -0.014) - 0.008]}
                   rotation={[0.15, 0, 0]}
-                  scale={[1, 0.55, 0.5]}
+                  scale={[1.05, 0.44, 0.46]}
                   material={mats.hair}
                 >
-                  <sphereGeometry args={[0.058, 12, 10]} />
+                  <sphereGeometry args={[0.05, 12, 10]} />
                 </mesh>
               </group>
               <mesh
                 geometry={geo.nose}
                 material={mats.flush}
-                position={[0, 0.024, 0.108]}
+                position={[0, 0.022, faceZ(0, 0.022) - 0.012]}
                 scale={[0.85, 1.1, 1]}
               />
               {/* a bit of colour high on each cheek */}
               {[-1, 1].map((s) => (
                 <mesh
                   key={s}
-                  position={[s * 0.085, -0.012, 0.086]}
-                  scale={[0.055, 0.035, 0.012]}
+                  position={[s * 0.082, -0.012, faceZ(0.082, -0.012) - 0.004]}
+                  scale={[0.05, 0.032, 0.012]}
                   material={mats.flush}
                 >
                   <sphereGeometry args={[1, 10, 8]} />
                 </mesh>
               ))}
-              {/* small eyes, set deep, with lids that sit low even wide awake */}
+              {/* Small eyes, set deep, with lids that sit low even wide awake.
+                  The whole group is pulled back into the skull by `EYE_SINK` so
+                  the eye is bedded in a socket rather than stuck on — but the
+                  socket is measured off the face, not guessed. */}
               {[-1, 1].map((s, i) => (
-                <group key={s} position={[s * 0.05, 0.038, 0.096]}>
-                  <mesh material={mats.eye}>
-                    <sphereGeometry args={[0.015, 10, 8]} />
+                <group key={s} position={[s * 0.052, 0.036, faceZ(0.052, 0.036) - 0.014]}>
+                  <mesh position={[0, 0, 0.005]} material={mats.eye}>
+                    <sphereGeometry args={[0.016, 10, 8]} />
                   </mesh>
                   <mesh
                     ref={(m) => {
                       lidRefs.current[i] = m;
                     }}
-                    position={[0, 0.011, 0.004]}
+                    position={[0, 0.011, 0.002]}
                     scale={[1, 0.42, 1]}
                     material={mats.skin}
                   >
-                    <sphereGeometry args={[0.019, 10, 8]} />
+                    <sphereGeometry args={[0.02, 10, 8]} />
                   </mesh>
                   {/* the bag under it */}
-                  <mesh position={[0, -0.015, 0.002]} scale={[1.05, 0.4, 0.8]} material={mats.flush}>
-                    <sphereGeometry args={[0.017, 10, 8]} />
+                  <mesh position={[0, -0.016, 0.002]} scale={[1.1, 0.4, 0.8]} material={mats.flush}>
+                    <sphereGeometry args={[0.019, 10, 8]} />
                   </mesh>
                   <mesh
                     ref={(m) => {
                       browRefs.current[i] = m;
                     }}
-                    position={[0, 0.03, 0.004]}
+                    position={[0, 0.03, 0.012]}
                     rotation={[0, 0, -s * 0.26]}
                     material={mats.hair}
                   >
-                    <boxGeometry args={[0.05, 0.012, 0.016]} />
+                    <boxGeometry args={[0.052, 0.014, 0.018]} />
                   </mesh>
                 </group>
               ))}
@@ -630,15 +705,15 @@ export default function Officer() {
               {[-1, 1].map((s) => (
                 <mesh
                   key={s}
-                  position={[s * 0.115, -0.008, 0]}
-                  scale={[0.4, 1, 0.7]}
+                  position={[s * (faceX(-0.008) - 0.006), -0.008, 0]}
+                  scale={[0.45, 1, 0.7]}
                   material={mats.skin}
                 >
-                  <sphereGeometry args={[0.04, 10, 8]} />
+                  <sphereGeometry args={[0.044, 10, 8]} />
                 </mesh>
               ))}
               {/* peaked cap, pushed back off his forehead */}
-              <group position={[0, 0.1, -0.03]} rotation={[-0.22, 0.06, 0.04]}>
+              <group position={[0, 0.098, -0.022]} rotation={[-0.12, 0.06, 0.04]}>
                 <mesh material={mats.cap} castShadow>
                   <cylinderGeometry args={[0.132, 0.122, 0.085, 16]} />
                 </mesh>
@@ -653,26 +728,28 @@ export default function Officer() {
                   <mesh
                     key={i}
                     position={[
-                      Math.sin((i / 12) * Math.PI * 2) * 0.13,
+                      Math.sin((i / 12) * Math.PI * 2) * 0.132,
                       -0.03 + (i % 2 ? 0.009 : -0.009),
-                      Math.cos((i / 12) * Math.PI * 2) * 0.13,
+                      Math.cos((i / 12) * Math.PI * 2) * 0.132,
                     ]}
                     rotation={[0, (i / 12) * Math.PI * 2, 0]}
                   >
-                    <boxGeometry args={[0.07, 0.019, 0.006]} />
+                    <boxGeometry args={[0.072, 0.019, 0.016]} />
                     <meshStandardMaterial color="#f0f2f6" roughness={0.8} />
                   </mesh>
                 ))}
+                {/* The peak. It has to reach out past his forehead — level with
+                    it, the cap reads as a hat with no brim at all. */}
                 <mesh
-                  position={[0, -0.028, 0.122]}
+                  position={[0, -0.03, 0.155]}
                   rotation={[0.32, 0, 0]}
                   material={mats.vest}
                   castShadow
                 >
-                  <boxGeometry args={[0.195, 0.016, 0.115]} />
+                  <boxGeometry args={[0.2, 0.016, 0.14]} />
                 </mesh>
-                <mesh position={[0, 0.005, 0.12]} material={mats.badge}>
-                  <boxGeometry args={[0.045, 0.05, 0.008]} />
+                <mesh position={[0, 0.005, 0.126]} material={mats.badge}>
+                  <boxGeometry args={[0.045, 0.05, 0.01]} />
                 </mesh>
               </group>
             </group>

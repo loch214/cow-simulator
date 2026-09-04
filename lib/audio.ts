@@ -226,3 +226,97 @@ export function grunt() {
   osc.start(t0);
   osc.stop(t0 + 0.36);
 }
+
+/** A mouthful of pond. Filtered noise, gated into three wet gulps. */
+export function slurp() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  const len = 0.42;
+  const buffer = c.createBuffer(1, Math.floor(c.sampleRate * len), c.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    const u = i / data.length;
+    // three bursts, each fading — the gate is what makes it read as gulping
+    const pulse = Math.max(0, Math.sin(u * Math.PI * 6));
+    data[i] = (Math.random() * 2 - 1) * pulse * (1 - u * 0.5);
+  }
+  const noise = c.createBufferSource();
+  noise.buffer = buffer;
+  const band = c.createBiquadFilter();
+  band.type = "bandpass";
+  band.frequency.setValueAtTime(420, t0);
+  band.frequency.linearRampToValueAtTime(900, t0 + len);
+  band.Q.value = 2.2;
+  const gain = c.createGain();
+  gain.gain.value = 0.22;
+  noise.connect(band).connect(gain).connect(c.destination);
+  noise.start(t0);
+  noise.stop(t0 + len);
+}
+
+/** Sheep. A bleat is a wobbling saw that gives up halfway through. */
+export function baa() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  const osc = c.createOscillator();
+  osc.type = "sawtooth";
+  const base = 300 + Math.random() * 120;
+  osc.frequency.setValueAtTime(base, t0);
+  osc.frequency.linearRampToValueAtTime(base * 0.82, t0 + 0.45);
+
+  // the tremble, which is the entire character of the sound
+  const wobble = c.createOscillator();
+  wobble.frequency.value = 21 + Math.random() * 6;
+  const wobbleGain = c.createGain();
+  wobbleGain.gain.value = base * 0.09;
+  wobble.connect(wobbleGain).connect(osc.frequency);
+
+  const filter = c.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 1100;
+  filter.Q.value = 1.6;
+
+  const gain = c.createGain();
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.11, t0 + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+
+  osc.connect(filter).connect(gain).connect(c.destination);
+  osc.start(t0);
+  wobble.start(t0);
+  osc.stop(t0 + 0.52);
+  wobble.stop(t0 + 0.52);
+}
+
+/** The speed camera. Two capacitor whines and a shutter clack. */
+export function shutter() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  for (const [at, freq] of [[0, 2400], [0.12, 3100]] as [number, number][]) {
+    const osc = c.createOscillator();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(freq, t0 + at);
+    const gain = c.createGain();
+    gain.gain.setValueAtTime(0.0001, t0 + at);
+    gain.gain.exponentialRampToValueAtTime(0.05, t0 + at + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.06);
+    osc.connect(gain).connect(c.destination);
+    osc.start(t0 + at);
+    osc.stop(t0 + at + 0.07);
+  }
+  const buffer = c.createBuffer(1, Math.floor(c.sampleRate * 0.05), c.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 3);
+  }
+  const noise = c.createBufferSource();
+  noise.buffer = buffer;
+  const hp = c.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.value = 2000;
+  const g = c.createGain();
+  g.gain.value = 0.3;
+  noise.connect(hp).connect(g).connect(c.destination);
+  noise.start(t0 + 0.13);
+  noise.stop(t0 + 0.19);
+}

@@ -129,13 +129,47 @@ body {
   animation: hint-fade var(--hint-ms, 9000ms) ease-in forwards;
 }
 
-/* The "turn your phone" arrow. */
-@keyframes rotate-hint {
-  0%, 18%   { transform: rotate(0deg); }
-  38%, 72%  { transform: rotate(-90deg); }
-  92%, 100% { transform: rotate(0deg); }
+/* ---------------------------------------------------------------------------
+ * "Turn your phone sideways", as a picture instead of a sentence.
+ *
+ * The phone turns; the arrows around it brighten while it is turning and dim
+ * once it has landed, so the whole loop reads as one instruction rather than
+ * two things wobbling. See components/RotateHint.tsx.
+ * ------------------------------------------------------------------------ */
+@keyframes phone-turn {
+  0%, 16%   { transform: rotate(0deg); }
+  48%, 76%  { transform: rotate(-90deg); }
+  96%, 100% { transform: rotate(0deg); }
 }
 
-.rotate-hint {
-  animation: rotate-hint 3200ms cubic-bezier(0.5, 0, 0.2, 1) infinite;
+.phone-turn {
+  animation: phone-turn 3400ms cubic-bezier(0.5, 0, 0.2, 1) infinite;
+  transform-origin: 32px 32px;
+  transform-box: view-box;
+}
+
+@keyframes phone-arrows {
+  0%, 10%   { opacity: 0.3; }
+  26%, 58%  { opacity: 1; }
+  84%, 100% { opacity: 0.3; }
+}
+
+.phone-arrows {
+  animation: phone-arrows 3400ms ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------------------
+ * The speed camera going off. A hard white frame, gone almost before you have
+ * registered it — a slow fade reads as a bug rather than a flashbulb.
+ * ------------------------------------------------------------------------ */
+@keyframes cam-flash {
+  0%   { opacity: 0; }
+  6%   { opacity: 0.85; }
+  18%  { opacity: 0.1; }
+  26%  { opacity: 0.7; }
+  100% { opacity: 0; }
+}
+
+.cam-flash {
+  animation: cam-flash 620ms ease-out forwards;
 }

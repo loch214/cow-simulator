@@ -276,11 +276,11 @@ export function headMap(): THREE.Texture {
     // The band is narrow because the pad already covers everything past v≈0.93:
     // an earlier version started this gradient at v=0.7 and painted the entire
     // bridge of the nose grey, which turned the head into a snout.
-    const muzzle = ctx.createLinearGradient(0, s * 0.86, 0, s);
-    muzzle.addColorStop(0, "rgba(64,54,50,0)");
-    muzzle.addColorStop(1, "rgba(64,54,50,0.6)");
+    const muzzle = ctx.createLinearGradient(0, s * 0.8, 0, s);
+    muzzle.addColorStop(0, "rgba(96,80,76,0)");
+    muzzle.addColorStop(1, "rgba(126,110,102,0.2)");
     ctx.fillStyle = muzzle;
-    ctx.fillRect(0, s * 0.86, s, s * 0.14);
+    ctx.fillRect(0, s * 0.8, s, s * 0.2);
   });
 }
 

@@ -9,6 +9,12 @@
 
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { rng } from "./rand";
+
+// Re-exported so everything that already builds meshes can keep getting its
+// randomness from here. It lives in ./rand because lib/world.ts needs it and
+// must not pull `three` in — see the note in that file.
+export { rng };
 
 /**
  * One cross-section of a lofted shape: an ellipse of half-width `rx` and
@@ -165,17 +171,6 @@ export function loft(rings: Ring[], opts: LoftOptions = {}): THREE.BufferGeometr
   return geo;
 }
 
-/** Deterministic RNG, so the same fence gets the same knots on every reload. */
-export function rng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /**
  * One blade of grass: a tapered strip that curves over under its own weight,

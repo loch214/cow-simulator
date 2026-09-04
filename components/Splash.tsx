@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useCowStore } from "@/lib/store";
 import { requestLock } from "@/lib/input";
 import { useIsTouch } from "@/lib/useIsTouch";
-import { canFullscreen, enterImmersive, useIsPortrait } from "@/lib/viewport";
+import { enterImmersive, useIsPortrait } from "@/lib/viewport";
+import RotateHint from "./RotateHint";
 
 /** How long the card takes to lift away. Must match `splash-out` in globals.css. */
 const OUT_MS = 460;
@@ -85,17 +86,15 @@ export default function Splash() {
 
       {/* bottom: the way in */}
       <div className="flex flex-col items-center gap-3 px-6 pb-[calc(var(--safe-b)+1.75rem)] landscape:gap-2 landscape:pb-[calc(var(--safe-b)+1rem)]">
+        {/* Best played sideways. Said as a picture rather than a sentence —
+            the card already has a title, a subtitle and a button on it, and a
+            fourth line of words is one nobody reads. */}
         {touch && portrait && (
           <div
-            className="splash-in flex items-center gap-2.5 rounded-full bg-black/45 px-4 py-2 text-sm font-medium text-white/90 backdrop-blur-sm"
+            className="splash-in grid h-16 w-16 place-items-center rounded-2xl bg-black/40 text-white backdrop-blur-sm"
             style={{ "--in-delay": "520ms" } as React.CSSProperties}
           >
-            <span className="rotate-hint inline-block text-lg">📱</span>
-            <span>
-              {canFullscreen()
-                ? "Best sideways — tapping will try to turn it for you"
-                : "Turn your phone sideways for the full field"}
-            </span>
+            <RotateHint size={42} />
           </div>
         )}
 
