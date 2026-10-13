@@ -4,225 +4,116 @@
  * The officer.
  *
  * He is fat and he is not interested, and both of those are built into the
- * geometry rather than acted out on top of it. The gut is the widest thing on
- * him, the stab vest visibly no longer does up over it, his arms cannot hang
- * straight because of it, and the legs are short and already bent so he stands
- * with his weight given up. Everything the animation does — the yawn, the
- * doughnut, the heavy blink — sits on top of a body that already reads as
+ * body rather than acted out on top of it. The gut is the widest thing on him,
+ * the stab vest gave up trying to close over it some time ago, his arms cannot
+ * hang straight because of it, and the legs are short and already bent so he
+ * stands with his weight given up. Everything the animation does — the yawn,
+ * the doughnut, the heavy blink — sits on top of a body that already reads as
  * somebody who would rather be sitting down.
+ *
+ * He used to be built the way the cow was: forty separate tubes, spheres and
+ * boxes pushed into each other, which left his scalp poking up through his own
+ * cap and his face sunk into his vest. He is now two pieces of skin built by
+ * lib/sdf.ts — a body, and a head-and-neck that goes into the body at the shirt
+ * collar, which is where a seam belongs — painted by region and bound to the
+ * same groups the animation has always driven.
  */
 
 import { useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { useCowStore } from "@/lib/store";
-import { loft, lumpGeometry, rng } from "@/lib/geometry";
+import { rng } from "@/lib/geometry";
+import { bindSkin, snapshotRest } from "@/lib/sdf";
+import { skinGeometry } from "@/lib/skinClient";
+import {
+  C,
+  FACE,
+  FOOT_LEVEL,
+  HEAD_Y,
+  HIP_Y,
+  OFFICER_BONES as BONES,
+  SHIN,
+  SHIN_TILT,
+  THIGH,
+  THIGH_TILT,
+  type BoneName,
+} from "@/lib/officerBody";
 import { OFFICER, STATION } from "@/lib/world";
 
-const NAVY = "#22335e";
-const NAVY_DARK = "#161f3a";
-const HI_VIS = "#d8e24a";
-
-/**
- * A tapered limb segment, built along +z and swung down by its parent group.
- *
- * Both ends are domed and run `LIMB_OVER` past the joint they hang off. Two
- * flat-capped tubes butted together show the ring where they meet and pull
- * apart into a visible gap the moment the joint bends — which is what made him
- * look assembled rather than modelled. See `joint` below for the other half of
- * the fix.
- */
-const LIMB_OVER = 0.035;
-
-const limb = (len: number, top: number, waist: number, bottom: number) =>
-  loft(
-    [
-      { z: -LIMB_OVER, rx: top * 0.44, ry: top * 0.4 },
-      { z: 0, rx: top, ry: top * 0.92 },
-      { z: len * 0.2, rx: waist * 1.06, ry: waist },
-      { z: len * 0.48, rx: waist, ry: waist * 0.95 },
-      { z: len * 0.78, rx: waist * 0.86, ry: waist * 0.82 },
-      { z: len, rx: bottom, ry: bottom * 0.9 },
-      { z: len + LIMB_OVER, rx: bottom * 0.44, ry: bottom * 0.4 },
-    ],
-    { radial: 14, segments: 26 }
-  );
-
-/**
- * The swelling at an elbow, a knee or a shoulder: fatter than both the limb
- * above it and the limb below, so it swallows the two domed ends meeting inside
- * it and the join has nowhere to show.
- */
-const joint = (r: number, above = 0.045, below = 0.05) =>
-  loft(
-    [
-      { z: -above, rx: r * 0.32, ry: r * 0.3 },
-      { z: -above * 0.55, rx: r * 0.78, ry: r * 0.74 },
-      { z: below * 0.2, rx: r, ry: r * 0.95 },
-      { z: below * 0.62, rx: r * 0.84, ry: r * 0.8 },
-      { z: below, rx: r * 0.34, ry: r * 0.32 },
-    ],
-    { radial: 14, segments: 20 }
-  );
-
-/**
- * A hand, closed round whatever it is holding. A box read as a block of wood on
- * the end of a stick; this is at least knuckled.
- */
-const fistGeo = () =>
-  loft(
-    [
-      { z: -0.03, y: 0, rx: 0.03, ry: 0.033 },
-      { z: 0.01, y: -0.004, rx: 0.042, ry: 0.046 },
-      { z: 0.055, y: -0.008, rx: 0.046, ry: 0.05 },
-      { z: 0.095, y: -0.004, rx: 0.041, ry: 0.045 },
-      { z: 0.125, y: 0.004, rx: 0.024, ry: 0.028 },
-    ],
-    { radial: 14, segments: 18, square: 0.4 }
-  );
-
-/**
- * The stance, solved rather than eyeballed, so the boots stand ON the forecourt
- * instead of in it. The thigh tips forward and the shin tips back under it —
- * the shape a heavy man standing still for an hour settles into — and the boot
- * then cancels the net angle so the sole stays flat.
- */
-const HIP_Y = 0.9;
-const THIGH = 0.4;
-const SHIN = 0.4;
-const THIGH_TILT = 0.09;
-const SHIN_TILT = -0.16;
-/** What the boot has to undo to sit flat on the ground. */
-const FOOT_LEVEL = -(THIGH_TILT + SHIN_TILT);
-
-/**
- * The skull, as the rings it is lofted from — and the single source of truth
- * for where his face is.
- *
- * The head mesh is stood up by a `[-PI/2, 0, 0]` wrapper, which swings the
- * loft's +z spine to +y and turns each ring's `y` offset into **minus z** in
- * head space. That one sign is why every feature on his face used to be a
- * centimetre or two inside his head: the eyes, the moustache and the mouth were
- * all placed at z ≈ 0.1 by eye, and the surface they were meant to sit on is at
- * z ≈ 0.13. He had no face at all — from the front you were looking at a bald
- * egg with a nose-tip poking out of it. `faceZ` below solves for the surface so
- * nothing has to be guessed again.
- */
-const SKULL_RINGS = [
-  { z: -0.12, y: 0, rx: 0.108, ry: 0.112 },
-  { z: -0.02, y: 0.006, rx: 0.132, ry: 0.134 },
-  { z: 0.06, y: -0.014, rx: 0.126, ry: 0.128 },
-  { z: 0.125, y: -0.045, rx: 0.098, ry: 0.098 },
-  { z: 0.152, y: -0.07, rx: 0.068, ry: 0.062 },
-];
-
-/** The skull's cross-section at head height `y`, in head-space terms. */
-function skullAt(y: number) {
-  const r = SKULL_RINGS;
-  let i = 0;
-  while (i < r.length - 2 && y > r[i + 1].z) i++;
-  const a = r[i];
-  const b = r[i + 1];
-  const f = Math.max(0, Math.min(1, (y - a.z) / (b.z - a.z)));
-  return {
-    // the loft's ring `y` becomes -z once the head is stood up
-    cz: -(a.y + (b.y - a.y) * f),
-    rx: a.rx + (b.rx - a.rx) * f,
-    rz: a.ry + (b.ry - a.ry) * f,
-  };
-}
-
-/** How far forward the face is at (`x`, `y`). Everything on it is placed off this. */
-function faceZ(x: number, y: number): number {
-  const s = skullAt(y);
-  const t = Math.min(1, Math.abs(x) / s.rx);
-  return s.cz + s.rz * Math.sqrt(Math.max(0, 1 - t * t));
-}
-
-/** How far out the side of the head is at height `y`. */
-function faceX(y: number): number {
-  return skullAt(y).rx;
-}
-
-const officerGeo = {
-  /**
-   * Belt line at z=0, shoulders at z=0.66 — and the widest ring is the second
-   * one, not the chest. A torso that tapers *upwards* is the whole silhouette.
-   * The loft's `y` runs backwards once the shape is stood up, so the negative
-   * values on the low rings are the belly leaning out over the belt.
-   */
-  torso: () =>
-    loft(
-      [
-        { z: 0, y: -0.02, rx: 0.225, ry: 0.185 },
-        { z: 0.1, y: -0.055, rx: 0.272, ry: 0.228 },
-        { z: 0.24, y: -0.05, rx: 0.278, ry: 0.23 },
-        { z: 0.4, y: -0.022, rx: 0.258, ry: 0.196 },
-        { z: 0.55, y: 0.004, rx: 0.242, ry: 0.164 },
-        { z: 0.66, y: 0.006, rx: 0.212, ry: 0.146 },
-      ],
-      { radial: 20, segments: 28, square: 0.28 }
-    ),
-  /** Round, jowly, and set on a neck that is barely a neck. */
-  skull: () => loft(SKULL_RINGS, { radial: 18, segments: 22 }),
-  /**
-   * The stab vest. It starts at the bottom of the ribs and gives up there: the
-   * gut below it is in shirt, which is the joke and also what a stab vest does
-   * on somebody this shape.
-   *
-   * It also has to be measurably FATTER than the torso underneath it, not
-   * roughly the same size. The belly scales up to about 1.065 across and 1.086
-   * deep as he breathes, and the old vest was inside that on the chest and dead
-   * level with it front and back — so the shirt came through it and he read as a
-   * man in a light blue jumper with a yellow belt.
-   */
-  vest: () =>
-    loft(
-      [
-        { z: 0.36, y: -0.026, rx: 0.298, ry: 0.238 },
-        { z: 0.44, y: -0.014, rx: 0.3, ry: 0.234 },
-        { z: 0.55, y: 0.002, rx: 0.286, ry: 0.204 },
-        { z: 0.64, y: 0.006, rx: 0.252, ry: 0.178 },
-        { z: 0.685, y: 0.006, rx: 0.208, ry: 0.15 },
-      ],
-      { radial: 20, segments: 26, square: 0.34 }
-    ),
-  hiVis: () =>
-    loft(
-      [
-        { z: 0.45, y: -0.012, rx: 0.306, ry: 0.238 },
-        { z: 0.52, y: -0.002, rx: 0.3, ry: 0.226 },
-      ],
-      { radial: 20, segments: 4, caps: false, square: 0.34 }
-    ),
-  /** The belt, slung under the gut. A ring, not a slab bolted across him. */
-  belt: () =>
-    loft(
-      [
-        { z: -0.05, y: -0.02, rx: 0.238, ry: 0.2 },
-        { z: 0.0, y: -0.03, rx: 0.258, ry: 0.216 },
-        { z: 0.06, y: -0.036, rx: 0.262, ry: 0.218 },
-        { z: 0.1, y: -0.032, rx: 0.244, ry: 0.204 },
-      ],
-      { radial: 20, segments: 20, caps: false, square: 0.3 }
-    ),
-  // Short and thick. The forearm barely tapers, which is what stops a fat arm
-  // reading as a thin arm with a loose sleeve on it.
-  upperArm: () => limb(0.27, 0.082, 0.072, 0.062),
-  foreArm: () => limb(0.25, 0.066, 0.06, 0.05),
-  thigh: () => limb(THIGH, 0.128, 0.115, 0.082),
-  shin: () => limb(SHIN, 0.084, 0.07, 0.058),
-  /**
-   * Deltoid, elbow, knee. Each is a little wider than the limbs meeting inside
-   * it and no more. Overdo this and the swelling stops covering the seam and
-   * starts being one: the joint's own silhouette cuts across the arm, and a ball
-   * with a step down to a tube is exactly the look this was meant to remove.
-   */
-  shoulderCap: () => joint(0.094, 0.06, 0.09),
-  elbow: () => joint(0.069, 0.05, 0.055),
-  knee: () => joint(0.091, 0.055, 0.06),
-  fist: () => fistGeo(),
+const lin = (hex: string) => {
+  const c = new THREE.Color(hex);
+  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
 };
+
+/**
+ * The uniform, painted per pixel from where each point sits on him at rest
+ * (model space: y up from the ground, +z forward). Vertex colours alone left a
+ * saw-tooth along every hem, one triangle wide; this draws the edges clean.
+ *
+ * The clothes are colour on one skin rather than shells over another, so the
+ * vest can never end up inside the shirt again — which it was, twice.
+ */
+const UNIFORM_GLSL = /* glsl */ `
+varying vec3 vRest;
+varying float vRegion;
+vec3 officerTorso(vec3 p) {
+  float a = fwidth(p.y) * 1.2 + 0.0008;
+  float ax = fwidth(p.x) * 1.2 + 0.0008;
+  // The vest stops above the gut and does not meet in the middle: there is
+  // too much of him for it.
+  float hem = 1.16 + smoothstep(-0.05, 0.12, p.z) * 0.05 + max(p.z, 0.0) * 0.12;
+  float gapW = 0.028 + max(0.0, 1.5 - p.y) * 0.09;
+  float gap = smoothstep(0.06, 0.1, p.z) * (1.0 - smoothstep(gapW - ax, gapW + ax, abs(p.x)));
+  float vest = smoothstep(hem - a, hem + a, p.y) * (1.0 - smoothstep(1.58 - a, 1.58 + a, p.y)) * (1.0 - gap);
+  float hivis = smoothstep(1.33 - a, 1.33 + a, p.y) * (1.0 - smoothstep(1.385 - a, 1.385 + a, p.y));
+  float belt = smoothstep(0.865 - a, 0.865 + a, p.y) * (1.0 - smoothstep(0.95 - a, 0.95 + a, p.y));
+  float legs = 1.0 - smoothstep(0.865 - a, 0.865 + a, p.y);
+  vec3 c = ${lin(C.shirt)};
+  c = mix(c, ${lin(C.belt)}, belt);
+  c = mix(c, ${lin(C.trouser)}, legs);
+  c = mix(c, mix(${lin(C.vest)}, ${lin(C.hivis)}, hivis), vest);
+  return c;
+}
+`;
+
+function uniformMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 });
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute float region;\nvarying vec3 vRest;\nvarying float vRegion;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvRest = position;\nvRegion = region;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\n${UNIFORM_GLSL}`)
+      .replace(
+        "#include <color_fragment>",
+        "#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, officerTorso(vRest), vRegion);"
+      );
+  };
+  m.customProgramCacheKey = () => "officer-uniform";
+  return m;
+}
+
+
+// ---------------------------------------------------------------------------
+
+/** The chequered band, painted once onto a strip: two rows, eighteen across. */
+function checkerMap(): THREE.Texture {
+  const c = document.createElement("canvas");
+  c.width = 288;
+  c.height = 32;
+  const g = c.getContext("2d")!;
+  for (let i = 0; i < 18; i++) {
+    for (let r = 0; r < 2; r++) {
+      g.fillStyle = (i + r) % 2 ? C.check : C.cap;
+      g.fillRect(i * 16, r * 16, 16, 16);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
 
 /** The doughnut. Not a full torus: there is a bite out of it. */
 const donutGeo = () => new THREE.TorusGeometry(0.048, 0.023, 10, 20, Math.PI * 1.52);
@@ -243,27 +134,21 @@ const SPRINKLES = (() => {
 function useOfficerMaterials() {
   return useMemo(
     () => ({
-      shirt: new THREE.MeshStandardMaterial({ color: "#8fa8cc", roughness: 0.85 }),
-      vest: new THREE.MeshStandardMaterial({ color: NAVY_DARK, roughness: 0.8 }),
-      trouser: new THREE.MeshStandardMaterial({ color: "#232838", roughness: 0.9 }),
-      cap: new THREE.MeshStandardMaterial({ color: NAVY, roughness: 0.7 }),
-      // ruddier than the first pass: this is a man who takes the stairs badly
-      skin: new THREE.MeshStandardMaterial({ color: "#d09a72", roughness: 0.7 }),
-      flush: new THREE.MeshStandardMaterial({ color: "#c47f66", roughness: 0.72 }),
-      hair: new THREE.MeshStandardMaterial({ color: "#5a4436", roughness: 0.95 }),
-      boot: new THREE.MeshStandardMaterial({ color: "#171717", roughness: 0.45 }),
+      // one material for both pieces of skin: the clothes are vertex colour
+      skin: uniformMaterial(),
+      cap: new THREE.MeshStandardMaterial({ color: C.cap, roughness: 0.6 }),
+      band: new THREE.MeshStandardMaterial({ map: checkerMap(), roughness: 0.7 }),
+      visor: new THREE.MeshStandardMaterial({ color: C.visor, roughness: 0.25 }),
+      flesh: new THREE.MeshStandardMaterial({ color: C.skin, roughness: 0.7 }),
+      flush: new THREE.MeshStandardMaterial({ color: C.flush, roughness: 0.72 }),
+      hair: new THREE.MeshStandardMaterial({ color: C.hair, roughness: 0.95 }),
       belt: new THREE.MeshStandardMaterial({ color: "#14161d", roughness: 0.5 }),
+      vest: new THREE.MeshStandardMaterial({ color: C.vest, roughness: 0.8 }),
       chrome: new THREE.MeshStandardMaterial({ color: "#c9cdd4", roughness: 0.3, metalness: 0.85 }),
       badge: new THREE.MeshStandardMaterial({ color: "#e2b53c", roughness: 0.3, metalness: 0.7 }),
-      hivis: new THREE.MeshStandardMaterial({
-        color: HI_VIS,
-        roughness: 0.7,
-        emissive: HI_VIS,
-        emissiveIntensity: 0.12,
-      }),
       paper: new THREE.MeshStandardMaterial({ color: "#f7f4e8", roughness: 0.95 }),
       eye: new THREE.MeshStandardMaterial({ color: "#241a12", roughness: 0.15 }),
-      mouth: new THREE.MeshStandardMaterial({ color: "#5c2f2d", roughness: 0.6 }),
+      mouth: new THREE.MeshStandardMaterial({ color: "#4a2224", roughness: 0.6 }),
       icing: new THREE.MeshStandardMaterial({ color: "#e8709c", roughness: 0.55 }),
       sprinkle: new THREE.MeshStandardMaterial({ color: "#fdf6e6", roughness: 0.6 }),
       cup: new THREE.MeshStandardMaterial({ color: "#f0ece2", roughness: 0.85 }),
@@ -297,32 +182,9 @@ function pulse(t: number, period: number, width: number): number {
  */
 export default function Officer() {
   const mats = useOfficerMaterials();
-  const geo = useMemo(
-    () => ({
-      torso: officerGeo.torso(),
-      vest: officerGeo.vest(),
-      hiVis: officerGeo.hiVis(),
-      belt: officerGeo.belt(),
-      skull: officerGeo.skull(),
-      upperArm: officerGeo.upperArm(),
-      foreArm: officerGeo.foreArm(),
-      thigh: officerGeo.thigh(),
-      shin: officerGeo.shin(),
-      shoulderCap: officerGeo.shoulderCap(),
-      elbow: officerGeo.elbow(),
-      knee: officerGeo.knee(),
-      fist: officerGeo.fist(),
-      nose: lumpGeometry(1717, 0.034, 0.1, 2, true),
-      donut: donutGeo(),
-    }),
-    []
-  );
+  const donut = useMemo(() => donutGeo(), []);
 
-  // A loft is built along +z. `down` swings that to -y for anything that hangs
-  // (arms, legs); `up` swings it to +y for anything that stands (torso, vest).
-  const down: [number, number, number] = [Math.PI / 2, 0, 0];
-  const up: [number, number, number] = [-Math.PI / 2, 0, 0];
-
+  const outerRef = useRef<THREE.Group>(null);
   const rootRef = useRef<THREE.Group>(null);
   const hipsRef = useRef<THREE.Group>(null);
   const chestRef = useRef<THREE.Group>(null);
@@ -333,22 +195,58 @@ export default function Officer() {
   const foodArmRef = useRef<THREE.Group>(null);
   const foodForeRef = useRef<THREE.Group>(null);
   const jawRef = useRef<THREE.Group>(null);
+  const mouthRef = useRef<THREE.Mesh>(null);
   const browRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
   const lidRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
   const blinkRef = useRef({ next: 3, closing: 0 });
+  const boundRef = useRef(false);
 
   const inCutscene = useCowStore((s) => s.inCutscene);
   const speaker = useCowStore((s) => s.speaker);
   const dialogue = useCowStore((s) => s.dialogue);
 
-  const talking = inCutscene && speaker === "officer" && dialogue !== null;
+  // He talks at the station during the complaint, and to anyone who comes up
+  // to him the rest of the time.
+  const talking = speaker === "officer" && dialogue !== null;
   const listening = inCutscene && !talking;
 
   // positioned relative to the station group
   const px = OFFICER.x - STATION.x;
   const pz = OFFICER.z - STATION.z;
 
+  /**
+   * Bind the skin to the rig, on the first frame and before anything has moved
+   * — the groups are still exactly where the JSX put them, which is the rest
+   * pose the skin is built around.
+   */
+  function bind(outer: THREE.Group) {
+    const found: Partial<Record<BoneName, THREE.Object3D>> = {};
+    outer.traverse((o) => {
+      if (o.name.startsWith("o-")) found[o.name.slice(2) as BoneName] = o;
+    });
+    const bones = BONES.map((n) => found[n]);
+    if (bones.some((b) => !b)) {
+      console.error("officer skin: missing bone", BONES.filter((_, i) => !bones[i]));
+      return;
+    }
+    const rest = snapshotRest(outer, bones as THREE.Object3D[]);
+    const toLocal = outer.matrixWorld.clone().invert();
+    const frames = BONES.map((n) => toLocal.clone().multiply(found[n]!.matrixWorld).toArray());
+    // meshed in a worker; he stays hidden until his skin turns up
+    const root = found.root!;
+    root.visible = false;
+    void skinGeometry({ kind: "officer", frames }).then(([body, head]) => {
+      bindSkin(body, mats.skin, outer, rest);
+      bindSkin(head, mats.skin, outer, rest);
+      root.visible = true;
+    });
+  }
+
   useFrame((state, delta) => {
+    if (!boundRef.current && outerRef.current) {
+      boundRef.current = true;
+      bind(outerRef.current);
+    }
     const t = state.clock.elapsedTime;
     const dt = Math.min(delta, 0.05);
 
@@ -396,7 +294,7 @@ export default function Officer() {
       } else if (listening) {
         // the slow nod of a man who stopped listening several sentences ago
         headRef.current.rotation.x = 0.13 + Math.sin(t * 1.4) * 0.07;
-        headRef.current.rotation.y = shift * 0.05;
+        headRef.current.rotation.y = Math.sin(t * 0.9) * 0.05;
       } else {
         headRef.current.rotation.x = 0.06 + Math.sin(t * 0.6) * 0.04;
         headRef.current.rotation.y = Math.sin(t * 0.29) * 0.32;
@@ -408,10 +306,7 @@ export default function Officer() {
     const scribble = listening ? Math.sin(t * 12) * 0.05 * pulse(t, 9.4, 1.6) : 0;
     if (padArmRef.current) {
       padArmRef.current.rotation.x = inCutscene ? -0.72 + Math.sin(t * 1.1) * 0.05 : -0.12;
-      // The arm cannot hang straight; there is a stomach in the way. This has to
-      // clear a gut half a metre across, so it is a lot more than it looks — and
-      // it is POSITIVE on the arm at +x, because a positive z tilt on a limb
-      // hanging down carries it towards +x, i.e. away from him.
+      // The arm cannot hang straight; there is a stomach in the way.
       padArmRef.current.rotation.z = inCutscene ? 0.38 : 0.4;
     }
     if (padForeRef.current) {
@@ -432,16 +327,20 @@ export default function Officer() {
       foodForeRef.current.rotation.z = bite * 0.35;
     }
 
+    // A yawn beats a sentence and a sentence beats chewing, so you can always
+    // tell which of the three he is doing without reading the bubble.
+    const open = Math.max(
+      yawn * 0.75,
+      talking ? Math.abs(Math.sin(t * 8)) * 0.28 + 0.04 : 0,
+      chew * 0.16
+    );
     if (jawRef.current) {
-      // A yawn beats a sentence and a sentence beats chewing, so you can always
-      // tell which of the three he is doing without reading the bubble.
-      const open = Math.max(
-        yawn * 0.75,
-        talking ? Math.abs(Math.sin(t * 8)) * 0.28 + 0.04 : 0,
-        chew * 0.16
-      );
-      jawRef.current.rotation.x = open;
-      jawRef.current.position.z = -open * 0.014;
+      jawRef.current.rotation.x = open * 0.7;
+    }
+    if (mouthRef.current) {
+      // The chin is skin, so opening the jaw stretches the face rather than
+      // splitting it; the dark of the mouth grows into the stretch.
+      mouthRef.current.scale.set(1 + open * 0.3, 0.25 + open * 2.6, 1);
     }
 
     // Blinks: slow, and a yawn squeezes both eyes shut on its own.
@@ -458,133 +357,82 @@ export default function Officer() {
     );
     lidRefs.current.forEach((lid) => {
       // never fully open: the lids sit low on him even wide awake
-      if (lid) lid.scale.y = 0.42 + Math.min(1.15, shut) * 0.9;
+      if (lid) lid.scale.y = 0.45 + Math.min(1.15, shut) * 0.9;
     });
     browRefs.current.forEach((brow) => {
-      if (brow) brow.position.y = 0.03 - yawn * 0.012;
+      if (brow) brow.position.y = 0.028 - yawn * 0.012;
     });
   });
 
   return (
-    <group position={[px, 0, pz]} rotation={[0, -Math.PI / 2, 0]}>
-      <group ref={rootRef}>
-        <group ref={hipsRef} position={[0, HIP_Y, 0]}>
-          {/* legs: short, set wide apart, and never quite straight */}
-          {[-1, 1].map((s) => (
-            <group key={s} position={[s * 0.145, 0, 0]} rotation={[THIGH_TILT, 0, s * 0.07]}>
-              <group rotation={down}>
-                <mesh geometry={geo.thigh} material={mats.trouser} castShadow />
-              </group>
-              <group position={[0, -THIGH, 0]} rotation={[SHIN_TILT, 0, 0]}>
-                <group rotation={down}>
-                  <mesh geometry={geo.knee} material={mats.trouser} castShadow />
-                  <mesh geometry={geo.shin} material={mats.trouser} castShadow />
-                </group>
-                {/* the boot undoes the leg's net angle, so the sole lands flat */}
-                <group position={[0, -SHIN, 0]} rotation={[FOOT_LEVEL, 0, 0]}>
-                  <mesh position={[0, -0.03, -0.005]} material={mats.boot} castShadow>
-                    <boxGeometry args={[0.145, 0.09, 0.17]} />
-                  </mesh>
-                  <mesh position={[0, -0.075, 0.055]} material={mats.boot} castShadow>
-                    <boxGeometry args={[0.14, 0.05, 0.3]} />
-                  </mesh>
+    <group ref={outerRef} position={[px, 0, pz]} rotation={[0, -Math.PI / 2, 0]}>
+      {/* Every group below is a bone; the skin is bound to them on the first
+          frame. The meshes left in the tree are the things that really are
+          separate from him: eyes, a moustache, a badge, a notepad, a doughnut. */}
+      <group ref={rootRef} name="o-root">
+        <group ref={hipsRef} name="o-hips" position={[0, HIP_Y, 0]}>
+          {(["L", "R"] as const).map((side) => {
+            const s = side === "L" ? -1 : 1;
+            return (
+              <group key={side} name={`o-leg${side}`} position={[s * 0.145, 0, 0]} rotation={[THIGH_TILT, 0, s * 0.07]}>
+                <group name={`o-shin${side}`} position={[0, -THIGH, 0]} rotation={[SHIN_TILT, 0, 0]}>
+                  <group name={`o-boot${side}`} position={[0, -SHIN, 0]} rotation={[FOOT_LEVEL, 0, 0]} />
                 </group>
               </group>
-            </group>
-          ))}
+            );
+          })}
 
-          {/* torso, from the belt up */}
-          <group ref={chestRef}>
-            <group ref={bellyRef}>
-              <group rotation={up}>
-                <mesh geometry={geo.torso} material={mats.shirt} castShadow />
-              </group>
-            </group>
-            {/* the vest, which stops well short of the bottom of him */}
-            <group rotation={up}>
-              <mesh geometry={geo.vest} material={mats.vest} castShadow />
-              <mesh geometry={geo.hiVis} material={mats.hivis} />
-            </group>
-            <mesh position={[0.13, 0.5, 0.19]} rotation={[0, 0.2, 0]} material={mats.badge}>
-              <boxGeometry args={[0.055, 0.07, 0.014]} />
+          <group ref={chestRef} name="o-chest">
+            <group ref={bellyRef} name="o-belly" />
+
+            {/* belt kit, on the front of a belt slung under the gut */}
+            <mesh position={[0, -0.0, 0.215]} material={mats.chrome}>
+              <boxGeometry args={[0.085, 0.06, 0.03]} />
             </mesh>
-            {/* epaulettes */}
+            <mesh position={[-0.235, -0.02, 0.06]} rotation={[0, 0.35, 0]} material={mats.belt} castShadow>
+              <boxGeometry args={[0.07, 0.16, 0.09]} />
+            </mesh>
+            <mesh position={[0.24, -0.01, 0.05]} rotation={[0, -0.35, 0]} material={mats.belt}>
+              <boxGeometry args={[0.06, 0.1, 0.07]} />
+            </mesh>
+            {/* badge, radio and epaulettes, out on the vest */}
+            <mesh position={[0.11, 0.47, 0.195]} rotation={[-0.15, 0.3, 0]} material={mats.badge}>
+              <boxGeometry args={[0.052, 0.066, 0.012]} />
+            </mesh>
+            <mesh position={[-0.13, 0.53, 0.185]} rotation={[-0.25, -0.3, 0]} material={mats.belt} castShadow>
+              <boxGeometry args={[0.055, 0.095, 0.035]} />
+            </mesh>
+            <mesh position={[-0.13, 0.61, 0.18]} rotation={[-0.25, -0.3, 0]} material={mats.belt}>
+              <cylinderGeometry args={[0.006, 0.006, 0.08, 6]} />
+            </mesh>
             {[-1, 1].map((s) => (
-              <mesh key={s} position={[s * 0.215, 0.63, 0]} material={mats.vest} castShadow>
-                <boxGeometry args={[0.14, 0.05, 0.16]} />
+              <mesh key={s} position={[s * 0.205, 0.675, -0.01]} rotation={[0, 0, s * -0.32]} material={mats.vest} castShadow>
+                <boxGeometry args={[0.13, 0.018, 0.14]} />
               </mesh>
             ))}
-            {/* Belt kit, slung UNDER the gut rather than round the waist. There
-                is no waist to put it round. It follows the shape of him — a
-                straight slab across a round belly leaves four corners hanging
-                in the air. */}
-            <group rotation={up}>
-              <mesh geometry={geo.belt} material={mats.belt} castShadow />
-            </group>
-            <mesh position={[0, -0.028, 0.226]} material={mats.chrome}>
-              <boxGeometry args={[0.09, 0.072, 0.026]} />
-            </mesh>
-            <mesh position={[-0.238, -0.03, 0.055]} rotation={[0, 0.3, 0]} material={mats.belt} castShadow>
-              <boxGeometry args={[0.07, 0.17, 0.09]} />
-            </mesh>
-            <mesh position={[0.238, -0.02, 0.055]} rotation={[0, -0.3, 0]} material={mats.chrome}>
-              <boxGeometry args={[0.05, 0.12, 0.05]} />
-            </mesh>
-            {/* radio on the shoulder, aerial and all */}
-            <mesh position={[-0.18, 0.54, 0.15]} material={mats.belt}>
-              <boxGeometry args={[0.06, 0.1, 0.04]} />
-            </mesh>
-            <mesh position={[-0.18, 0.62, 0.15]} material={mats.belt}>
-              <cylinderGeometry args={[0.006, 0.006, 0.09, 6]} />
-            </mesh>
 
             {/*
               Both arms. The shoulders sit OUTSIDE the widest ring of the torso
-              (0.278) rather than inside it, and each arm then swings further out
-              still — there is a gut half a metre across between them and neither
-              hand has anywhere to be except clear of it. Getting the sign of that
-              swing backwards is what buried the notepad in his chest and the
-              doughnut in his stomach.
+              rather than inside it, and each arm then swings further out still
+              — there is a gut half a metre across between them and neither
+              hand has anywhere to be except clear of it.
             */}
-            <group ref={padArmRef} position={[0.3, 0.585, 0.01]} rotation={[-0.12, 0, 0.4]}>
-              <group rotation={down}>
-                <mesh geometry={geo.shoulderCap} material={mats.shirt} castShadow />
-                <mesh geometry={geo.upperArm} material={mats.shirt} castShadow />
-              </group>
-              <group ref={padForeRef} position={[0, -0.27, 0]} rotation={[-0.75, 0, 0]}>
-                <group rotation={down}>
-                  <mesh geometry={geo.elbow} material={mats.shirt} castShadow />
-                  <mesh geometry={geo.foreArm} material={mats.shirt} castShadow />
-                </group>
-                <group position={[0, -0.255, 0.01]} rotation={down}>
-                  <mesh geometry={geo.fist} material={mats.skin} castShadow />
-                </group>
-                <mesh position={[0, -0.315, 0.085]} rotation={[0.55, 0, 0]} material={mats.paper}>
+            <group ref={padArmRef} name="o-padArm" position={[0.3, 0.585, 0.01]} rotation={[-0.12, 0, 0.4]}>
+              <group ref={padForeRef} name="o-padFore" position={[0, -0.27, 0]} rotation={[-0.75, 0, 0]}>
+                <mesh position={[0, -0.33, 0.09]} rotation={[0.55, 0, 0]} material={mats.paper} castShadow>
                   <boxGeometry args={[0.16, 0.21, 0.012]} />
                 </mesh>
-                <mesh position={[0.03, -0.3, 0.13]} rotation={[0.4, 0, 0.3]} material={mats.chrome}>
+                <mesh position={[0.035, -0.31, 0.135]} rotation={[0.4, 0, 0.3]} material={mats.chrome}>
                   <cylinderGeometry args={[0.007, 0.007, 0.12, 6]} />
                 </mesh>
               </group>
             </group>
 
-            {/* doughnut arm */}
-            <group ref={foodArmRef} position={[-0.3, 0.585, 0.01]} rotation={[-0.34, 0, -0.5]}>
-              <group rotation={down}>
-                <mesh geometry={geo.shoulderCap} material={mats.shirt} castShadow />
-                <mesh geometry={geo.upperArm} material={mats.shirt} castShadow />
-              </group>
-              <group ref={foodForeRef} position={[0, -0.27, 0]} rotation={[-0.95, 0, 0]}>
-                <group rotation={down}>
-                  <mesh geometry={geo.elbow} material={mats.shirt} castShadow />
-                  <mesh geometry={geo.foreArm} material={mats.shirt} castShadow />
-                </group>
-                <group position={[0, -0.255, 0.01]} rotation={down}>
-                  <mesh geometry={geo.fist} material={mats.skin} castShadow />
-                </group>
+            <group ref={foodArmRef} name="o-foodArm" position={[-0.3, 0.585, 0.01]} rotation={[-0.34, 0, -0.5]}>
+              <group ref={foodForeRef} name="o-foodFore" position={[0, -0.27, 0]} rotation={[-0.95, 0, 0]}>
                 {/* held between the fingers, bite already taken */}
-                <group position={[0, -0.33, 0.075]} rotation={[1.35, 0.3, 0.4]}>
-                  <mesh geometry={geo.donut} material={mats.icing} castShadow />
+                <group position={[0, -0.335, 0.08]} rotation={[1.35, 0.3, 0.4]}>
+                  <mesh geometry={donut} material={mats.icing} castShadow />
                   {SPRINKLES.map((s, i) => (
                     <mesh key={i} position={s.pos} rotation={s.rot} material={mats.sprinkle}>
                       <boxGeometry args={[0.014, 0.005, 0.005]} />
@@ -594,85 +442,26 @@ export default function Officer() {
               </group>
             </group>
 
-            {/* Neck. There is not much of one, and it is wider than the head. */}
-            <mesh position={[0, 0.68, 0.005]} material={mats.skin}>
-              <cylinderGeometry args={[0.085, 0.105, 0.1, 12]} />
-            </mesh>
-
-            <group ref={headRef} position={[0, 0.755, 0]} scale={1.06}>
-              <group rotation={[-Math.PI / 2, 0, 0]}>
-                <mesh geometry={geo.skull} material={mats.skin} castShadow />
-              </group>
-              {/* jowls, which is where the weight shows first. They have to
-                  stand PROUD of the side of the head, not sit level with it. */}
-              {[-1, 1].map((s) => (
-                <mesh
-                  key={s}
-                  position={[s * (faceX(-0.05) - 0.014), -0.052, 0.052]}
-                  scale={[0.78, 0.95, 0.95]}
-                  material={mats.skin}
-                  castShadow
-                >
-                  <sphereGeometry args={[0.066, 12, 10]} />
-                </mesh>
-              ))}
-              {/* jaw, hinged at the ears, with the second chin under it */}
-              <group ref={jawRef} position={[0, -0.03, -0.02]}>
-                <mesh
-                  position={[0, -0.05, faceZ(0, -0.08) - 0.03]}
-                  scale={[1.02, 0.72, 1.05]}
-                  material={mats.skin}
-                  castShadow
-                >
-                  <sphereGeometry args={[0.092, 14, 10]} />
-                </mesh>
-                <mesh
-                  position={[0, -0.098, faceZ(0, -0.128) - 0.05]}
-                  scale={[1.15, 0.62, 1.05]}
-                  material={mats.skin}
-                  castShadow
-                >
-                  <sphereGeometry args={[0.084, 14, 10]} />
-                </mesh>
-                <mesh position={[0, -0.026, faceZ(0, -0.056) + 0.006]} material={mats.mouth}>
-                  <boxGeometry args={[0.056, 0.011, 0.016]} />
-                </mesh>
-                {/* The moustache, which is doing a lot of the work here. It has
-                    to sit UNDER the nose and no lower: dropped to the chin it
-                    stops being a moustache and becomes a goatee on a bald egg. */}
-                <mesh
-                  position={[0, 0.016, faceZ(0, -0.014) - 0.008]}
-                  rotation={[0.15, 0, 0]}
-                  scale={[1.05, 0.44, 0.46]}
-                  material={mats.hair}
-                >
-                  <sphereGeometry args={[0.05, 12, 10]} />
-                </mesh>
-              </group>
+            <group ref={headRef} name="o-head" position={[0, HEAD_Y, 0]}>
+              <group ref={jawRef} name="o-jaw" position={[0, -0.03, -0.02]} />
+              {/* the mouth: dark, and it grows as the chin drops */}
+              <mesh ref={mouthRef} position={FACE.mouth.pos} rotation={FACE.mouth.rot} material={mats.mouth}>
+                <sphereGeometry args={[0.026, 12, 8]} />
+              </mesh>
+              {/* The moustache, which is doing a lot of the work here. */}
               <mesh
-                geometry={geo.nose}
-                material={mats.flush}
-                position={[0, 0.022, faceZ(0, 0.022) - 0.012]}
-                scale={[0.85, 1.1, 1]}
-              />
-              {/* a bit of colour high on each cheek */}
-              {[-1, 1].map((s) => (
-                <mesh
-                  key={s}
-                  position={[s * 0.082, -0.012, faceZ(0.082, -0.012) - 0.004]}
-                  scale={[0.05, 0.032, 0.012]}
-                  material={mats.flush}
-                >
-                  <sphereGeometry args={[1, 10, 8]} />
-                </mesh>
-              ))}
-              {/* Small eyes, set deep, with lids that sit low even wide awake.
-                  The whole group is pulled back into the skull by `EYE_SINK` so
-                  the eye is bedded in a socket rather than stuck on — but the
-                  socket is measured off the face, not guessed. */}
-              {[-1, 1].map((s, i) => (
-                <group key={s} position={[s * 0.052, 0.036, faceZ(0.052, 0.036) - 0.014]}>
-                  <mesh position={[0, 0, 0.005]} material={mats.eye}>
+                position={FACE.tache.pos}
+                rotation={[0.15, 0, 0]}
+                scale={[1.1, 0.42, 0.5]}
+                material={mats.hair}
+                castShadow
+              >
+                <sphereGeometry args={[0.05, 14, 10]} />
+              </mesh>
+              {/* Small eyes, set deep, with lids that sit low even wide awake. */}
+              {FACE.eyes.map((e, i) => (
+                <group key={i} position={e.pos} rotation={e.rot}>
+                  <mesh position={[0, 0, 0.004]} material={mats.eye}>
                     <sphereGeometry args={[0.016, 10, 8]} />
                   </mesh>
                   <mesh
@@ -680,8 +469,8 @@ export default function Officer() {
                       lidRefs.current[i] = m;
                     }}
                     position={[0, 0.011, 0.002]}
-                    scale={[1, 0.42, 1]}
-                    material={mats.skin}
+                    scale={[1, 0.45, 1]}
+                    material={mats.flesh}
                   >
                     <sphereGeometry args={[0.02, 10, 8]} />
                   </mesh>
@@ -693,63 +482,33 @@ export default function Officer() {
                     ref={(m) => {
                       browRefs.current[i] = m;
                     }}
-                    position={[0, 0.03, 0.012]}
-                    rotation={[0, 0, -s * 0.26]}
+                    position={[0, 0.028, 0.01]}
+                    rotation={[0, 0, (i ? -1 : 1) * 0.26]}
                     material={mats.hair}
                   >
                     <boxGeometry args={[0.052, 0.014, 0.018]} />
                   </mesh>
                 </group>
               ))}
-              {/* ears */}
-              {[-1, 1].map((s) => (
-                <mesh
-                  key={s}
-                  position={[s * (faceX(-0.008) - 0.006), -0.008, 0]}
-                  scale={[0.45, 1, 0.7]}
-                  material={mats.skin}
-                >
-                  <sphereGeometry args={[0.044, 10, 8]} />
+              {/* The cap: a separate, solid thing sitting ON his head, sized
+                  off the skull it sits on. The old one was a hair narrower than
+                  the head inside it, and his scalp came up through the crown. */}
+              <group position={[0, 0.115, -0.012]}>
+                <mesh material={mats.band} castShadow>
+                  <cylinderGeometry args={[0.139, 0.139, 0.072, 36, 1, true]} />
                 </mesh>
-              ))}
-              {/* peaked cap, pushed back off his forehead */}
-              <group position={[0, 0.098, -0.022]} rotation={[-0.12, 0.06, 0.04]}>
-                <mesh material={mats.cap} castShadow>
-                  <cylinderGeometry args={[0.132, 0.122, 0.085, 16]} />
+                <mesh position={[0, 0.05, -0.008]} material={mats.cap} castShadow>
+                  <cylinderGeometry args={[0.153, 0.14, 0.036, 36]} />
                 </mesh>
-                <mesh position={[0, 0.045, 0]} material={mats.cap}>
-                  <cylinderGeometry args={[0.135, 0.132, 0.02, 16]} />
+                <mesh position={[0, 0.07, -0.008]} scale={[1, 0.25, 1]} material={mats.cap}>
+                  <sphereGeometry args={[0.153, 24, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
                 </mesh>
-                <mesh position={[0, -0.03, 0]} material={mats.vest}>
-                  <cylinderGeometry args={[0.129, 0.129, 0.038, 16]} />
+                {/* the peak: a half disc out over his eyes */}
+                <mesh position={[0, -0.03, 0.105]} rotation={[0.38, 0, 0]} scale={[1, 1, 0.62]} material={mats.visor} castShadow>
+                  <cylinderGeometry args={[0.12, 0.12, 0.012, 24, 1, false, -Math.PI / 2, Math.PI]} />
                 </mesh>
-                {/* chequered band, the one thing that makes a cap read as police */}
-                {Array.from({ length: 12 }, (_, i) => (
-                  <mesh
-                    key={i}
-                    position={[
-                      Math.sin((i / 12) * Math.PI * 2) * 0.132,
-                      -0.03 + (i % 2 ? 0.009 : -0.009),
-                      Math.cos((i / 12) * Math.PI * 2) * 0.132,
-                    ]}
-                    rotation={[0, (i / 12) * Math.PI * 2, 0]}
-                  >
-                    <boxGeometry args={[0.072, 0.019, 0.016]} />
-                    <meshStandardMaterial color="#f0f2f6" roughness={0.8} />
-                  </mesh>
-                ))}
-                {/* The peak. It has to reach out past his forehead — level with
-                    it, the cap reads as a hat with no brim at all. */}
-                <mesh
-                  position={[0, -0.03, 0.155]}
-                  rotation={[0.32, 0, 0]}
-                  material={mats.vest}
-                  castShadow
-                >
-                  <boxGeometry args={[0.2, 0.016, 0.14]} />
-                </mesh>
-                <mesh position={[0, 0.005, 0.126]} material={mats.badge}>
-                  <boxGeometry args={[0.045, 0.05, 0.01]} />
+                <mesh position={[0, 0.006, 0.137]} material={mats.badge}>
+                  <boxGeometry args={[0.04, 0.046, 0.01]} />
                 </mesh>
               </group>
             </group>

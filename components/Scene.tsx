@@ -152,8 +152,69 @@ function DevBridge() {
     if (process.env.NODE_ENV === "production") return;
     const w = window as unknown as Record<string, unknown>;
     w.__cowScene = { ...state, advance };
+    // the per-frame state that lives outside React, for poking at in tests
+    w.__cow = { cowState, cam };
+    // `__shot(px,py,pz, tx,ty,tz, fov)` renders the live scene from any camera
+    // into an overlay image (`__hide()` removes it). A second renderer on a
+    // detached canvas, so it works even when the game canvas is not drawing —
+    // see "Verifying without watching it" in HANDOFF.md.
+    let shotRenderer: THREE.WebGLRenderer | null = null;
+    w.__shot = (px: number, py: number, pz: number, tx: number, ty: number, tz: number, fov = 35) => {
+      if (!shotRenderer) {
+        shotRenderer = new THREE.WebGLRenderer({ canvas: document.createElement("canvas"), antialias: true });
+        shotRenderer.setSize(1280, 720, false);
+        shotRenderer.toneMapping = state.gl.toneMapping;
+        shotRenderer.toneMappingExposure = state.gl.toneMappingExposure;
+        shotRenderer.shadowMap.enabled = true;
+        shotRenderer.shadowMap.type = state.gl.shadowMap.type;
+      }
+      let img = document.getElementById("__shot") as HTMLImageElement | null;
+      if (!img) {
+        img = document.createElement("img");
+        img.id = "__shot";
+        img.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:9999;object-fit:cover;background:#000";
+        document.body.appendChild(img);
+      }
+      const lens = new THREE.PerspectiveCamera(fov, 1280 / 720, 0.02, 400);
+      lens.position.set(px, py, pz);
+      lens.lookAt(tx, ty, tz);
+      shotRenderer.render(state.scene, lens);
+      img.src = shotRenderer.domElement.toDataURL("image/png");
+      img.style.display = "block";
+      return "ok";
+    };
+    // `await __step(frames)` runs the game forward on a virtual 60fps clock,
+    // letting React flush between frames so store-driven gags still start. For
+    // automated tabs, where requestAnimationFrame is throttled to a crawl.
+    w.__step = async (frames: number, ms = 1000 / 60) => {
+      const real = performance.now.bind(performance);
+      const win = w as { __vt?: number };
+      if (win.__vt === undefined) {
+        win.__vt = real();
+        performance.now = () => win.__vt!;
+      }
+      const flush = () =>
+        new Promise<void>((r) => {
+          const c = new MessageChannel();
+          c.port1.onmessage = () => r();
+          c.port2.postMessage(0);
+        });
+      for (let i = 0; i < frames; i++) {
+        win.__vt! += ms;
+        advance(win.__vt!, true);
+        await flush();
+      }
+      return frames;
+    };
+    w.__hide = () => {
+      const img = document.getElementById("__shot");
+      if (img) img.style.display = "none";
+    };
     return () => {
       delete w.__cowScene;
+      delete w.__cow;
+      delete w.__shot;
+      shotRenderer?.dispose();
     };
   }, [state]);
   return null;

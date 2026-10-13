@@ -9,8 +9,8 @@ export interface ScriptStep {
   t: number; // ms from gag start
   say?: string;
   /** Store fills `say` from the named pool, so the line differs each time. */
-  pool?: "insult" | "bellow" | "dance";
-  sound?: "smack" | "moo" | "chew" | "kiss" | "grunt" | "creak" | "slurp";
+  pool?: "insult" | "bellow" | "dance" | "bonk";
+  sound?: "smack" | "moo" | "chew" | "kiss" | "grunt" | "creak" | "slurp" | "bonk";
   lips?: boolean; // stamp the lip mark on the screen
   /** Bumped counter the scarecrow watches, so a bellow knocks its hat off. */
   scare?: boolean;
@@ -229,7 +229,46 @@ const DRINK: Pose = {
   legFR: { rot: [0.1, 0, 0] },
 };
 
+/**
+ * Seeing stars, after running flat out into something solid. Sways one way,
+ * then the other, then shakes it off — the stars are drawn by Cow.tsx for as
+ * long as this gag is running.
+ */
+const dazed = (side: number): Pose => ({
+  head: { rot: [0.22, side * 0.32, side * 0.34], pos: [0, -0.04, 0] },
+  body: { rot: [0, 0, side * 0.07], pos: [side * 0.03, -0.015, -0.04] },
+  earL: { rot: [-0.5, 0, 0.4] },
+  earR: { rot: [-0.5, 0, -0.4] },
+  // legs splayed, the stance of something that is not sure where the ground is
+  legFL: { rot: [0.06, 0, -0.1] },
+  legFR: { rot: [0.06, 0, 0.1] },
+  jaw: { rot: [0.14, 0, 0] },
+  tail: { rot: [0.25, 0, 0] },
+});
+
 export const gags: Record<string, GagDef> = {
+  bonk: {
+    id: "bonk",
+    duration: 2500,
+    keyframes: [
+      { t: 0, pose: {} },
+      // the head snaps back off whatever it hit
+      { t: 90, pose: { head: { rot: [-0.45, 0, 0] }, body: { pos: [0, 0, -0.14], rot: [-0.05, 0, 0] } } },
+      { t: 380, pose: dazed(1) },
+      { t: 800, pose: dazed(-1) },
+      { t: 1220, pose: dazed(0.8) },
+      { t: 1640, pose: dazed(-0.6) },
+      { t: 2050, pose: { head: { rot: [0.1, 0.2, 0] } } },
+      // and a quick shake to clear it
+      { t: 2200, pose: { head: { rot: [0.05, -0.3, 0] } } },
+      { t: 2450, pose: {} },
+    ],
+    script: [
+      { t: 0, sound: "bonk" },
+      { t: 700, pool: "bonk" },
+    ],
+  },
+
   // Triggered by walking onto a grass tuft and pressing E.
   eat: {
     id: "eat",
@@ -377,6 +416,26 @@ export const danceLines = [
   "This is a limited engagement.",
   "You have no idea how hard this is on four legs.",
   "Nobody asked, but here we are.",
+];
+
+/** Said, eventually, after running into something at full gallop. */
+export const bonkLines = [
+  "Who put that there.",
+  "I meant to do that.",
+  "Ow. My entire face.",
+  "Nobody saw that. Nobody saw that.",
+  "Cows should come with brakes.",
+  "I can hear colours.",
+];
+
+/** What the cow says to a camera that has just photographed it. */
+export const ticketLines = [
+  "Was that a camera? Did it get my good side?",
+  "I demand a retake.",
+  "That wasn't me. Different cow.",
+  "Speed limit? I'm a COW.",
+  "Put it on my tab.",
+  "Worth it.",
 ];
 
 /** What the cow shouts at a scarecrow. It is not a conversation. */

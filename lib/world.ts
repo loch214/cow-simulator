@@ -76,7 +76,17 @@ export const REGROW_MS = 14000;
 export const SLAPS_BEFORE_POLICE = 4;
 
 export const WALK_SPEED = 2.3;
+/**
+ * Flat out, with Shift held or the stick shoved to its rim. Twice walking pace,
+ * on the same legs — the stride rate doubles rather than the stride, so it reads
+ * as half a tonne of animal scrabbling as fast as it can, which is the joke.
+ */
+export const GALLOP_SPEED = 4.6;
+/** Hit something solid faster than this and the cow sees stars. */
+export const BONK_SPEED = 3.3;
 export const TURN_SPEED = 7;
+/** Metres a second to miles an hour, for anything shown to the player. */
+export const MPH = 2.237;
 
 /**
  * How fast the stride clock runs, per unit of walking speed. This is NOT a taste
@@ -139,15 +149,40 @@ export const POND = { x: 14.5, z: -12.2, r: 3.3 };
  * up to speed to trip it.
  */
 export const SPEED_TRAP = { x: 12.4, z: 1.9 };
-/** How fast the cow has to be going past it to set it off. */
-export const SPEED_LIMIT = 1.9;
 /**
- * How close it has to be to notice. Tight, so you can creep past it — but it
- * has to be bigger than `SPEED_TRAP.z`, or a cow running down the middle of
- * the road never comes inside it and the camera can only catch one that drives
- * along the verge.
+ * How fast the cow has to be going past it to set it off: between a walk and a
+ * gallop, so it is the player's choice. It used to be 1.9 — slower than the
+ * cow's ordinary walking pace — which meant the camera fired at anyone who
+ * simply held W, and there was nothing to understand and nothing to avoid.
+ *
+ * The posted limit on the sign is this in mph, rounded down: 7.
  */
-export const SPEED_TRAP_RANGE = 2.6;
+export const SPEED_LIMIT = 3.2;
+/**
+ * How close it has to be to notice. Has to be comfortably bigger than
+ * `SPEED_TRAP.z`, or a cow galloping down the middle of the road never comes
+ * inside it and the camera can only catch one that hugs the verge.
+ */
+export const SPEED_TRAP_RANGE = 3.4;
+/**
+ * Where the camera actually measures: the strip of road under the painted
+ * lines, verge to verge. A circle round the post (which is what this used to
+ * be) fired the moment a cow strayed near the pole at any angle, often while
+ * it was still getting up to speed; a measured strip across the road fires
+ * where the lines say it will, at whatever the cow is actually doing there.
+ */
+export const SPEED_ZONE = {
+  x0: SPEED_TRAP.x - 1.3,
+  x1: SPEED_TRAP.x + 1.4,
+  z0: SPEED_TRAP.z - 4.2,
+  z1: SPEED_TRAP.z + 0.6,
+};
+
+/** Seconds the camera needs to recharge between photos. */
+export const SPEED_TRAP_COOLDOWN = 6;
+
+/** The posted limit and the camera warning, on the verge on the way to it. */
+export const SPEED_SIGN = { x: 9.9, z: 1.85 };
 
 /** Where the flock starts. They wander from here and run from the cow. */
 export const SHEEP_HOME = { x: -15, z: -9 };
@@ -204,6 +239,7 @@ export const SOLIDS: Solid[] = [
   ...TREES.map((t) => ({ x: t.x, z: t.z, r: 0.42 * t.scale + COW_GIRTH })),
   { x: SCARECROW.x, z: SCARECROW.z, r: 0.55 },
   { x: SPEED_TRAP.x, z: SPEED_TRAP.z, r: 0.5 },
+  { x: SPEED_SIGN.x, z: SPEED_SIGN.z, r: 0.45 },
   // The officer. He is not going to move out of the way.
   { x: OFFICER.x, z: OFFICER.z, r: 0.85 },
 ];

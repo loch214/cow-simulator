@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useCowStore } from "@/lib/store";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import Officer from "./Officer";
@@ -286,8 +287,15 @@ function NoticeBoard({
       warm: r() > 0.6,
     }));
   }, []);
+  const poster = useWantedPoster();
   return (
     <group position={position} rotation={[0, -Math.PI / 2, 0]}>
+      {poster && (
+        <mesh position={[0.12, 1.33, 0.056]} rotation={[0, 0, -0.04]}>
+          <planeGeometry args={[0.46, 0.6]} />
+          <meshStandardMaterial map={poster} roughness={0.85} />
+        </mesh>
+      )}
       {[-0.42, 0.42].map((x) => (
         <mesh key={x} position={[x, 0.6, 0]} material={mats.brick} castShadow>
           <boxGeometry args={[0.07, 1.2, 0.07]} />
@@ -304,4 +312,57 @@ function NoticeBoard({
       ))}
     </group>
   );
+}
+
+/**
+ * The speed camera's photo of the cow, pinned up outside the station as a
+ * WANTED poster — the consequence of speeding that the player can go and see.
+ * Rebuilt whenever a new photo comes in, so it is always the latest offence.
+ */
+function useWantedPoster(): THREE.Texture | null {
+  const photo = useCowStore((s) => s.tickets[s.tickets.length - 1]?.photo ?? null);
+  const count = useCowStore((s) => s.tickets.length);
+  const [tex, setTex] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    if (!photo) return;
+    let live = true;
+    const img = new Image();
+    img.onload = () => {
+      if (!live) return;
+      const c = document.createElement("canvas");
+      c.width = 384;
+      c.height = 500;
+      const g = c.getContext("2d")!;
+      g.fillStyle = "#efe3c2";
+      g.fillRect(0, 0, 384, 500);
+      g.fillStyle = "#2a1d12";
+      g.textAlign = "center";
+      g.font = "bold 74px Georgia, 'Times New Roman', serif";
+      g.fillText(count >= 3 ? "MOST" : "", 192, count >= 3 ? 66 : 0);
+      g.fillText("WANTED", 192, count >= 3 ? 132 : 92);
+      const top = count >= 3 ? 150 : 112;
+      g.drawImage(img, 32, top, 320, 240);
+      g.strokeStyle = "#2a1d12";
+      g.lineWidth = 4;
+      g.strokeRect(32, top, 320, 240);
+      g.font = "bold 30px Georgia, 'Times New Roman', serif";
+      g.fillText("FOR SPEEDING", 192, top + 282);
+      g.font = "italic 22px Georgia, 'Times New Roman', serif";
+      g.fillText(`${count} offence${count === 1 ? "" : "s"} · reward: 1 bale`, 192, top + 318);
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = 4;
+      setTex((old) => {
+        old?.dispose();
+        return t;
+      });
+    };
+    img.src = photo;
+    return () => {
+      live = false;
+    };
+  }, [photo, count]);
+
+  return tex;
 }

@@ -12,31 +12,45 @@ import {
   FRONT_REST,
   FRONT_RIG,
   chewCycle,
+  gallopPose,
   idlePose,
   quadWalk,
 } from "@/lib/locomotion";
 import { angleDelta, approach, cowState, turnToward } from "@/lib/cowState";
 import { dancePose } from "@/lib/dance";
-import { moveAxis, onAction, onInteract, startInput } from "@/lib/input";
-import { cam, cameraGap, frameFront, lookForward } from "@/lib/camera";
+import { idleSeconds, moveAxis, onAction, onInteract, sprinting, startInput } from "@/lib/input";
+import { addShake, cam, cameraGap, frameFront, lookForward } from "@/lib/camera";
 import { cowPhysics, kickSpring, makeSpring, relaxPhysics, stepCowPhysics, stepSpring } from "@/lib/physics";
 import { creak, step as footstep } from "@/lib/audio";
 import { newRunner, stepCutscene, type CutsceneRunner } from "@/lib/cutscene";
-import { loft, lumpGeometry, rng } from "@/lib/geometry";
+import { loft, rng } from "@/lib/geometry";
 import { wind } from "@/lib/sway";
-import { hairBump, headMap, hideMap, legMap, upperLegMap } from "@/lib/textures";
+import {
+  coatMaterial,
+  COW_BONES,
+  HEAD_POS,
+  HOOF_HEIGHT,
+  JAW_POS,
+  NECK_ROOT,
+  onHead,
+  scalpY,
+} from "@/lib/cowBody";
+import { bindSkin, snapshotRest } from "@/lib/sdf";
+import { skinGeometry } from "@/lib/skinClient";
 import { CowHand, SlapHand } from "./Hands";
 import {
+  BONK_SPEED,
+  GALLOP_SPEED,
   GATE_POINT,
   GRASS,
   INTERACT_RANGE,
+  OFFICER,
   POND,
   resolveFence,
   resolveSolids,
   SCARECROW,
   SPEED_LIMIT,
-  SPEED_TRAP,
-  SPEED_TRAP_RANGE,
+  SPEED_ZONE,
   STRIDE_RATE,
   TURN_SPEED,
   WALK_SPEED,
@@ -59,11 +73,6 @@ const HIDDEN: [number, number, number] = [0.001, 0.001, 0.001];
 const FRONT_HIP: [number, number, number] = [FRONT_RIG.hipX, FRONT_RIG.hipY, FRONT_RIG.hipZ];
 const BACK_HIP: [number, number, number] = [BACK_RIG.hipX, BACK_RIG.hipY, BACK_RIG.hipZ];
 
-/** The poll — the joint at the top of the neck that the skull hangs off. */
-const HEAD_POS: [number, number, number] = [0, 1.05, 0.86];
-/** Where the neck leaves the body. Buried in the chest so its stretch does not show. */
-const NECK_ROOT = new THREE.Vector3(0, 0.95, 0.32);
-
 const part = (
   pos: [number, number, number],
   rot: [number, number, number] = ORIGIN,
@@ -71,29 +80,40 @@ const part = (
 ): Base => ({ pos, rot, scale });
 
 /**
- * How far back the ears sweep from straight-out, and how far the tips droop.
+ * Which way the ears point: out, back, and drooping. Cows' ears hang; level
+ * paddles read as a plane's wings from the front.
  *
- * These are not free numbers. An ear is a leaf built along +z, and the group's
- * resting rotation is the ONLY thing deciding which way it leaves the skull —
- * so `[a, b, 0]` has to be solved rather than guessed. For Euler XYZ the local
- * +z axis lands at `(sin b, -cos b·sin a, cos b·cos a)`; putting `b = ±(PI/2 +
- * EAR_SWEEP)` aims it straight out of the side of the head and swings it back,
- * and `a = -EAR_DROOP` drops the tip. Guessed values are how both ears ended up
- * pointing forwards, with every millimetre of them buried inside the skull.
+ * An ear is a leaf built along +z, and the group's resting rotation is the ONLY
+ * thing deciding which way it leaves the skull, so the Euler is SOLVED from the
+ * direction rather than guessed. For order XYZ the local +z axis lands at
+ * `(sin b, -cos b·sin a, cos b·cos a)`; taking `b` past a right angle (so the
+ * ear sweeps back) gives `b = PI - asin(dx)` and `a = atan2(dy, -dz)`.
  */
-const EAR_SWEEP = 0.34;
-const EAR_DROOP = 0.62;
-const EAR_L: [number, number, number] = [-EAR_DROOP, -(Math.PI / 2 + EAR_SWEEP), 0];
-const EAR_R: [number, number, number] = [-EAR_DROOP, Math.PI / 2 + EAR_SWEEP, 0];
+const EAR_DIR = (() => {
+  const d = [0.8, -0.48, -0.36];
+  const l = Math.hypot(d[0], d[1], d[2]);
+  return d.map((v) => v / l);
+})();
+const EAR_A = Math.atan2(EAR_DIR[1], -EAR_DIR[2]);
+const EAR_B = Math.PI - Math.asin(EAR_DIR[0]);
+const EAR_L: [number, number, number] = [EAR_A, -EAR_B, 0];
+const EAR_R: [number, number, number] = [EAR_A, EAR_B, 0];
+
+/**
+ * Where the ears come out: found on the side of the skull rather than typed in,
+ * then pushed a couple of centimetres back inside so the root of the leaf is
+ * buried and never shows its edge.
+ */
+const EAR_X = onHead([0.4, 0.035, -0.06], [0, 0.035, -0.06]).p[0] - 0.026;
 
 const BASE: Record<PartName, Base> = {
   body: part(ORIGIN),
   head: part(HEAD_POS),
-  jaw: part([0, -0.045, 0.05]),
+  jaw: part(JAW_POS),
   // Rooted just inside the side of the skull, below the horns and behind the
   // eye — where a cow's ear actually comes out.
-  earL: part([-0.118, 0.026, -0.052], EAR_L),
-  earR: part([0.118, 0.026, -0.052], EAR_R),
+  earL: part([-EAR_X, 0.035, -0.06], EAR_L),
+  earR: part([EAR_X, 0.035, -0.06], EAR_R),
 
   // Leg joints carry their standing angles as their resting rotation, so a pose
   // that says nothing about the legs leaves the cow standing square rather than
@@ -113,7 +133,7 @@ const BASE: Record<PartName, Base> = {
 
   tail: part([0, 1.0, -0.7], [0.42, 0, 0]),
   tailTip: part([0, -0.3, 0]),
-  blush: part([0, -0.03, 0.16], ORIGIN, HIDDEN),
+  blush: part(ORIGIN, ORIGIN, HIDDEN),
   brow: part(ORIGIN, ORIGIN, HIDDEN),
 
   // The hand sits exactly where the front-right hoof does — on the end of the
@@ -121,6 +141,9 @@ const BASE: Record<PartName, Base> = {
   // overwrites its rotation every frame; only the position matters here.
   fist: part([0, -FRONT_RIG.seg[2], 0], ORIGIN, HIDDEN),
 };
+
+/** The neck bone's root, as a vector for the per-frame maths in `stretchNeck`. */
+const NECK_BASE = new THREE.Vector3(...NECK_ROOT);
 
 /** How far the muzzle sits ahead of the cow's own position, along its facing. */
 const MUZZLE_Z = 0.37;
@@ -144,187 +167,6 @@ const GATE_SWING = 0.7;
 function once<T>(build: () => T): () => T {
   let value: T | undefined;
   return () => (value ??= build());
-}
-
-/**
- * The barrel. A cow is deep and narrow rather than round — taller through the
- * ribs than it is wide — which is most of why a stack of spheres never reads as
- * one. Rings run rump (-z) to brisket (+z).
- */
-const torsoGeo = once(() =>
-  loft(
-    [
-      { z: -0.72, y: 0.86, rx: 0.115, ry: 0.14 },
-      { z: -0.6, y: 0.85, rx: 0.235, ry: 0.25 },
-      { z: -0.44, y: 0.845, rx: 0.275, ry: 0.285 },
-      { z: -0.15, y: 0.815, rx: 0.275, ry: 0.3 },
-      { z: 0.15, y: 0.815, rx: 0.27, ry: 0.305 },
-      { z: 0.42, y: 0.835, rx: 0.245, ry: 0.285 },
-      { z: 0.58, y: 0.855, rx: 0.215, ry: 0.25 },
-      { z: 0.7, y: 0.87, rx: 0.145, ry: 0.18 },
-    ],
-    { radial: 26, segments: 60 }
-  )
-);
-
-/** Neck, built one unit long so it can be stretched between shoulder and poll. */
-const neckGeo = once(() =>
-  loft(
-    [
-      { z: 0, rx: 0.205, ry: 0.245 },
-      { z: 0.35, rx: 0.175, ry: 0.208 },
-      { z: 0.72, rx: 0.142, ry: 0.166 },
-      { z: 1.0, rx: 0.112, ry: 0.125 },
-    ],
-    { radial: 20, segments: 24, caps: false }
-  )
-);
-
-/** The loose fold of skin under a cow's throat. Hangs off the chest, not the neck. */
-const dewlapGeo = once(() =>
-  loft(
-    [
-      { z: 0, y: 0.94, rx: 0.05, ry: 0.09 },
-      { z: 0.16, y: 0.85, rx: 0.062, ry: 0.14 },
-      { z: 0.34, y: 0.76, rx: 0.055, ry: 0.15 },
-      { z: 0.52, y: 0.72, rx: 0.045, ry: 0.11 },
-      { z: 0.66, y: 0.76, rx: 0.03, ry: 0.06 },
-    ],
-    { radial: 14, segments: 22 }
-  )
-);
-
-/**
- * One half of the udder. Two lobes rather than one blob, because the median
- * cleft down the middle is the whole silhouette of the thing.
- */
-const udderGeo = once(() => lumpGeometry(9001, 0.15, 0.13, 2));
-
-// ---------------------------------------------------------------------------
-// the masses that make the cow one animal instead of a kit of parts
-//
-// Everything below is a lump that sits on the barrel and OVERLAPS the top of a
-// limb, the neck or the tail. This is the single biggest thing separating the
-// cow that reads as an animal from the one that read as a stack of components:
-// a leg is a cone plugged into a flank, and no amount of texturing hides the
-// crease where the two meet. Put a shoulder or a haunch over the join, let the
-// bone rotate *inside* it, and the crease is gone at every angle — which is how
-// real quadruped rigs do it too.
-//
-// These are all built centred on their own origin and positioned in the body,
-// and none of them are animated: a shoulder barely moves against the ribs.
-// ---------------------------------------------------------------------------
-
-/** Shoulder blade and the muscle over it. Swallows the top of each front leg. */
-const shoulderGeo = once(() =>
-  loft(
-    [
-      // Both ends run out to nothing. A mass that still has area where it
-      // crosses back into the barrel leaves a hard rim there — an elliptical
-      // outline drawn on the flank, which is the giveaway that the cow is a pile
-      // of separate lumps. Tapered to a point, the two surfaces meet edge-on and
-      // the join simply disappears.
-      { z: -0.3, rx: 0.002, ry: 0.004 },
-      { z: -0.2, rx: 0.075, ry: 0.135 },
-      { z: -0.06, rx: 0.128, ry: 0.192 },
-      { z: 0.06, rx: 0.138, ry: 0.196 },
-      { z: 0.18, rx: 0.104, ry: 0.158 },
-      { z: 0.28, rx: 0.002, ry: 0.004 },
-    ],
-    { radial: 18, segments: 30 }
-  )
-);
-
-/** The great round muscle of the hind quarter. Also forms the cow's backside. */
-const haunchGeo = once(() =>
-  loft(
-    [
-      // Tapered out to nothing at both ends, for the same reason the shoulder is.
-      { z: -0.3, rx: 0.002, ry: 0.004 },
-      { z: -0.2, rx: 0.09, ry: 0.165 },
-      { z: -0.08, rx: 0.142, ry: 0.232 },
-      { z: 0.04, rx: 0.156, ry: 0.244 },
-      { z: 0.18, rx: 0.118, ry: 0.185 },
-      { z: 0.32, rx: 0.002, ry: 0.004 },
-    ],
-    { radial: 18, segments: 30 }
-  )
-);
-
-/**
- * The topline: withers, the dip of the loin, the hip bones and the tail head, as
- * one low ridge laid along the spine. A cow seen from behind or above is all
- * angles — a bony ridge between two round sides — and a barrel with a smooth
- * back is the other half of why the first pass read as a toy.
- *
- * Built in body coordinates, so it goes in at the origin.
- */
-const toplineGeo = once(() =>
-  loft(
-    [
-      { z: 0.68, y: 1.0, rx: 0.05, ry: 0.03 },
-      { z: 0.5, y: 1.09, rx: 0.088, ry: 0.05 },
-      { z: 0.3, y: 1.1, rx: 0.098, ry: 0.052 },
-      { z: 0.05, y: 1.095, rx: 0.09, ry: 0.048 },
-      { z: -0.2, y: 1.085, rx: 0.11, ry: 0.048 },
-      // the hooks: wide, flat and square, which is what makes them read as bone
-      { z: -0.42, y: 1.12, rx: 0.235, ry: 0.058 },
-      { z: -0.6, y: 1.085, rx: 0.15, ry: 0.055 },
-      { z: -0.73, y: 1.01, rx: 0.065, ry: 0.045 },
-    ],
-    { radial: 18, segments: 46, square: 0.45 }
-  )
-);
-
-/** The point of the chest, filling the gap between the two front legs. */
-const brisketGeo = once(() =>
-  loft(
-    [
-      { z: 0.24, y: 0.72, rx: 0.135, ry: 0.13 },
-      { z: 0.44, y: 0.685, rx: 0.16, ry: 0.155 },
-      { z: 0.6, y: 0.705, rx: 0.14, ry: 0.145 },
-      { z: 0.71, y: 0.765, rx: 0.075, ry: 0.085 },
-    ],
-    { radial: 16, segments: 22 }
-  )
-);
-
-/**
- * The skull. Rings run from behind the poll (-z) to the nose (+z): broad and
- * squarish across the cheeks, pinched at the bridge, then flaring back out into
- * a blunt muzzle. A cow head is short, deep and wide — build it long and tapered
- * and you get an anteater, which is exactly what the first attempt looked like.
- *
- * This table is the single source of truth for the shape of the head: `skullGeo`
- * lofts it, `scalpAt` plants hair on it and `faceAt` puts the eyes on it. It
- * lives up here, above all three, because a copy of it that drifts is how the
- * fringe ends up growing out of the inside of the forehead.
- */
-const SKULL_RINGS = [
-  { z: -0.16, y: 0.005, rx: 0.126, ry: 0.124 },
-  { z: -0.06, y: 0.012, rx: 0.154, ry: 0.15 },
-  { z: 0.04, y: -0.014, rx: 0.146, ry: 0.138 },
-  // the bridge, pinched in — this waist is what stops the head being a wedge
-  { z: 0.13, y: -0.05, rx: 0.107, ry: 0.108 },
-  { z: 0.21, y: -0.072, rx: 0.094, ry: 0.094 },
-  // ...and the muzzle end flaring back OUT, wider than the bridge above it
-  { z: 0.28, y: -0.086, rx: 0.099, ry: 0.096 },
-  { z: 0.325, y: -0.092, rx: 0.099, ry: 0.092 },
-];
-
-/** The skull's cross-section at `z`, interpolated between rings. */
-function skullAt(z: number) {
-  const r = SKULL_RINGS;
-  let i = 0;
-  while (i < r.length - 2 && z > r[i + 1].z) i++;
-  const a = r[i];
-  const b = r[i + 1];
-  const f = Math.max(0, Math.min(1, (z - a.z) / (b.z - a.z)));
-  return {
-    cy: a.y + (b.y - a.y) * f,
-    rx: a.rx + (b.rx - a.rx) * f,
-    ry: a.ry + (b.ry - a.ry) * f,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -388,31 +230,6 @@ const lockGeo = once(() => lockPiece(0, 1, 7));
 const lockRootGeo = once(() => lockPiece(0, 0.5, 4));
 const lockTipGeo = once(() => lockPiece(0.5, 1, 5));
 
-/**
- * The top of the skull, sampled from the same ring table `skullGeo` is lofted
- * from. Hair has to be PLANTED on this surface: the old fringe was pinned at one
- * fixed height on the poll, which is below the crown of the head, so two thirds
- * of every lock started out inside the skull and came out through the forehead
- * looking like a row of spikes driven into it.
- */
-function scalpAt(x: number, z: number): number {
-  const { cy, rx, ry } = skullAt(z);
-  const t = Math.min(1, Math.abs(x) / rx);
-  return cy + ry * Math.sqrt(Math.max(0, 1 - t * t));
-}
-
-/**
- * How far out the side of the head the surface is at (`y`, `z`) — the same
- * sampling as `scalpAt`, turned ninety degrees. The eyes are pushed out onto
- * this rather than placed by eye, because an eye a centimetre too far in
- * vanishes into the skull and the cow goes blank.
- */
-function faceAt(y: number, z: number): number {
-  const { cy, rx, ry } = skullAt(z);
-  const t = Math.min(1, Math.abs(y - cy) / ry);
-  return rx * Math.sqrt(Math.max(0, 1 - t * t));
-}
-
 interface Lock {
   pos: [number, number, number];
   rot: [number, number, number];
@@ -455,7 +272,7 @@ function clump({ seed, count, spread, z, aim, drop, lift = 0.008, roll = 0.9 }: 
     // hairline rather than sitting in one straight row
     const rz = z - edge * edge * 0.03;
     return {
-      pos: [x, scalpAt(x, rz) + lift, rz],
+      pos: [x, scalpY(x, rz) + lift, rz],
       rot: [
         // the further out, the more the strand has to lift to clear the dome
         aim - edge * 0.22 + (r() - 0.5) * 0.14,
@@ -520,6 +337,43 @@ const HAIR_CLUMPS: { tag: string; locks: Lock[]; shadow: boolean }[] = [
  * on a skull, and this grows out of the end of a tail. It is a fan instead, so
  * the strands spray out around the tip rather than all falling one way.
  */
+/**
+ * Everything that sits on the face, planted on it by ray casts against the
+ * skull's own distance field (`onHead`). The face is a sculpted surface now, not
+ * a table of rings, so nothing here can be typed in — a feature placed a
+ * centimetre off a curved surface either floats or vanishes, and both have
+ * happened to this cow.
+ */
+const FACE = (() => {
+  const v = (p: number[]): [number, number, number] => [p[0], p[1], p[2]];
+  const eyes = [-1, 1].map((s) => {
+    const { p, n } = onHead([s * 0.4, 0.03, 0.3], [0, 0.03, 0.0]);
+    return {
+      // sunk so a little over half the eyeball stands proud: big, wet and
+      // slightly bulging, which is most of what makes a cow look worried
+      pos: v([p[0] - n[0] * 0.012, p[1] - n[1] * 0.012, p[2] - n[2] * 0.012]),
+      rot: v([-Math.asin(n[1]), Math.atan2(n[0], n[2]), -s * 0.12]),
+    };
+  });
+  const brows = [-1, 1].map((s) => {
+    const { p, n } = onHead([s * 0.3, 0.078, 0.1], [0, 0.078, 0.02]);
+    return v([p[0] + n[0] * 0.004, p[1] + n[1] * 0.004, p[2] + n[2] * 0.004]);
+  });
+  const blush = [-1, 1].map((s) => {
+    const { p, n } = onHead([s * 0.4, -0.045, 0.1], [0, -0.045, 0.1]);
+    return v([p[0] - n[0] * 0.012, p[1], p[2]]);
+  });
+  const horns = [-1, 1].map((s) => v([s * 0.075, scalpY(s * 0.075, -0.05) - 0.03, -0.05]));
+  const nostrilZ = onHead([0.05, -0.058, 0.6], [0.05, -0.058, 0]).p[2];
+  return {
+    eyes,
+    brows,
+    blush,
+    horns,
+    nostrils: v([0, -0.058, nostrilZ - 0.004]),
+  };
+})();
+
 const SWITCH: Lock[] = (() => {
   const r = rng(6163);
   return Array.from({ length: 11 }, (_, i) => {
@@ -531,54 +385,6 @@ const SWITCH: Lock[] = (() => {
     };
   });
 })();
-
-const skullGeo = once(() => loft(SKULL_RINGS, { radial: 22, segments: 42, square: 0.2 }));
-
-/**
- * The soft pad around the nostrils and lips — leathery, and a different colour.
- *
- * Kept small and squared off. A big round pink dome on a white face is a pig's
- * snout, which is exactly what the first version looked like; a real muzzle is a
- * broad flat plate of dark skin, and `headMap` paints the skull dark for the
- * last stretch behind it so the transition is skin-to-skin rather than a pink
- * disc stuck on white hair.
- */
-/**
- * Where the front of the pad is. The nostrils are placed relative to this
- * rather than in absolute numbers, because a pad that gets narrowed by a
- * centimetre swallows a nostril that did not move with it — which is how the
- * cow ended up with a smooth rubber plate for a nose.
- */
-const MUZZLE_TIP = 0.384;
-const muzzleGeo = once(() =>
-  loft(
-    [
-      // starts inside the skull, comes out through it, and ends blunt: the flat
-      // front is what the nostrils and the philtrum have to sit on. Wider than
-      // it is tall, which is the one proportion that keeps this a muzzle and
-      // not a snout.
-      { z: 0.268, y: -0.086, rx: 0.056, ry: 0.046 },
-      { z: 0.318, y: -0.098, rx: 0.086, ry: 0.062 },
-      { z: 0.358, y: -0.106, rx: 0.088, ry: 0.062 },
-      { z: MUZZLE_TIP, y: -0.112, rx: 0.072, ry: 0.05 },
-    ],
-    { radial: 22, segments: 24, square: 0.22 }
-  )
-);
-
-/** Lower jaw. Swings on the `jaw` part so the cow can chew. */
-const jawGeo = once(() =>
-  loft(
-    [
-      { z: -0.09, y: -0.02, rx: 0.112, ry: 0.062 },
-      { z: 0.04, y: -0.052, rx: 0.108, ry: 0.062 },
-      { z: 0.15, y: -0.072, rx: 0.086, ry: 0.05 },
-      { z: 0.25, y: -0.086, rx: 0.07, ry: 0.042 },
-      { z: 0.312, y: -0.096, rx: 0.058, ry: 0.034 },
-    ],
-    { radial: 16, segments: 20, square: 0.3 }
-  )
-);
 
 /**
  * A big soft leaf of an ear. Built along +z, flat in y, and swung out of the
@@ -628,112 +434,11 @@ const hornGeo = once(() =>
 );
 
 /**
- * Leg bones. `seg` picks the length; the taper is what makes it look boned.
- *
- * Both ends are DOMED and run past the joint they hang off by `over`. Two capped
- * tubes butted end to end is what made the legs read as a stack of blocks: at
- * rest you see the ring where the caps meet, and the moment the leg bends the
- * two discs pull apart and the joint opens up. A bone that pokes into the
- * swelling above and below it can never do either, at any angle.
- *
- * The rings are deliberately evenly spaced along the bone. `loft` runs a
- * Catmull-Rom through them by INDEX, so bunching a couple of rings up against
- * an end makes the spline overshoot between the far-apart ones and puts a
- * phantom bulge in the middle of the shin.
- */
-const BONE_OVER = 0.045;
-
-const boneGeo = (len: number, top: number, waist: number, bottom: number) => {
-  const oval = 1.06; // a leg is slightly deeper front-to-back than it is wide
-  const ring = (z: number, r: number) => ({ z, rx: r * oval, ry: r });
-  return loft(
-    [
-      ring(-BONE_OVER, top * 0.45),
-      ring(0, top),
-      ring(len * 0.18, waist + (top - waist) * 0.45),
-      ring(len * 0.42, waist),
-      ring(len * 0.68, waist * 0.95),
-      ring(len * 0.88, bottom + (waist * 0.95 - bottom) * 0.35),
-      ring(len, bottom),
-      ring(len + BONE_OVER, bottom * 0.45),
-    ],
-    { radial: 14, segments: 34 }
-  );
-};
-
-/**
- * The swelling at a joint — knee, hock, fetlock. Hung off the LOWER bone's pivot
- * so it turns with the bend, and deliberately fatter than both bones it sits
- * between: its entire job is to swallow the two domed ends that meet inside it.
- * This is the same trick as the shoulder and the haunch further up, just at the
- * scale of a knee.
- *
- * `deep` stretches it front-to-back. Every joint on a cow's leg is deeper than
- * it is wide, and a joint built as a plain ball reads as a bearing, not a knee.
- */
-const jointGeo = (above: number, below: number, r: number, deep = 1.15) =>
-  loft(
-    [
-      { z: -above, rx: r * 0.3, ry: r * 0.3 * deep },
-      { z: -above * 0.58, rx: r * 0.74, ry: r * 0.74 * deep },
-      { z: -above * 0.14, rx: r * 0.98, ry: r * 0.98 * deep },
-      { z: below * 0.24, rx: r, ry: r * deep },
-      { z: below * 0.64, rx: r * 0.84, ry: r * 0.84 * deep },
-      { z: below, rx: r * 0.32, ry: r * 0.32 * deep },
-    ],
-    { radial: 14, segments: 22 }
-  );
-
-// The tops are narrower than they look like they should be, on purpose: each one
-// has to fit INSIDE the shoulder or haunch that covers its joint (see the masses
-// above), or the bone pokes out through the muscle and the crease is back.
-const frontUpperGeo = once(() => boneGeo(FRONT_RIG.seg[0], 0.125, 0.096, 0.07));
-const frontMidGeo = once(() => boneGeo(FRONT_RIG.seg[1], 0.072, 0.056, 0.046));
-// The cannon stops short of the ground: the hoof caps it.
-const frontCannonGeo = once(() => boneGeo(FRONT_RIG.seg[2] - 0.05, 0.048, 0.04, 0.043));
-const backUpperGeo = once(() => boneGeo(BACK_RIG.seg[0], 0.135, 0.112, 0.072));
-const backMidGeo = once(() => boneGeo(BACK_RIG.seg[1], 0.075, 0.055, 0.045));
-const backCannonGeo = once(() => boneGeo(BACK_RIG.seg[2] - 0.05, 0.047, 0.039, 0.043));
-
-// Knee and hock. Both are wider than the bone above AND the bone below them —
-// which is also simply true of a cow, whose knees are the widest part of the leg
-// — but only just. A joint much fatter than its bones stops hiding the seam and
-// becomes one: you get a ball with a step down to a tube on either side, which
-// is the exact look this is here to remove.
-const frontKneeGeo = once(() => jointGeo(0.06, 0.09, 0.082, 1.18));
-const backKneeGeo = once(() => jointGeo(0.06, 0.095, 0.086, 1.34));
-/** The swelling that covers the top of the cannon where it leaves the knee. */
-const cannonTopGeo = once(() => jointGeo(0.05, 0.06, 0.052, 1.1));
-/**
- * Fetlock and pastern in one piece: the knuckle the hoof hangs off, and the
- * short slope from it into the coronet. One shape rather than two, because two
- * capped tubes stacked here read as a white cuff pulled over the ankle — the
- * flat end of the lower one draws a hard ring right where nothing should be.
- *
- * It starts buried in the cannon and finishes buried in the hoof, so neither end
- * is ever visible from any angle.
- */
-const pasternGeo = once(() =>
-  loft(
-    [
-      { z: -0.062, rx: 0.017, ry: 0.017 },
-      { z: -0.032, rx: 0.039, ry: 0.041 },
-      { z: 0, rx: 0.047, ry: 0.05 },
-      { z: 0.03, rx: 0.043, ry: 0.045 },
-      { z: 0.058, rx: 0.039, ry: 0.041 },
-      { z: 0.086, rx: 0.021, ry: 0.023 },
-    ],
-    { radial: 14, segments: 26 }
-  )
-);
-
-/**
  * One half of a cloven hoof, built from the coronet DOWN — `z` here is distance
  * below the top of the hoof, because the leg solver puts the end of the chain on
  * the ground and the hoof has to stand on that point rather than hang under it.
  * Get this backwards and the cow walks with its feet buried.
  */
-const HOOF_HEIGHT = 0.098;
 const toeGeo = once(() =>
   loft(
     [
@@ -785,89 +490,82 @@ const switchGeo = once(() =>
   )
 );
 
-const eyeGeo = once(() => new THREE.SphereGeometry(0.031, 16, 14));
-const lidGeo = once(
-  () => new THREE.SphereGeometry(0.035, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55)
+/** The tongue: a soft, flat, slightly cupped strip, built along +z. */
+const tongueGeo = once(() =>
+  loft(
+    [
+      { z: -0.02, y: 0, rx: 0.02, ry: 0.008 },
+      { z: 0.04, y: -0.01, rx: 0.03, ry: 0.011 },
+      { z: 0.09, y: -0.03, rx: 0.034, ry: 0.011 },
+      { z: 0.13, y: -0.06, rx: 0.028, ry: 0.01 },
+      { z: 0.155, y: -0.08, rx: 0.012, ry: 0.007 },
+    ],
+    { radial: 12, segments: 16 }
+  )
 );
-/** The bony ridge a cow's eye sits in. Without it the eye reads as stuck on. */
-const socketGeo = once(() => new THREE.SphereGeometry(0.048, 14, 10));
 
+/** A five-pointed cartoon star, for after a collision. */
+const starGeo = once(() => {
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? 0.018 : 0.042;
+    const a = (i / 10) * Math.PI * 2 + Math.PI / 2;
+    if (i === 0) shape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else shape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  shape.closePath();
+  const g = new THREE.ExtrudeGeometry(shape, { depth: 0.012, bevelEnabled: true, bevelSize: 0.004, bevelThickness: 0.004, bevelSegments: 1 });
+  g.center();
+  return g;
+});
+const STARS = [0, 1, 2, 3].map((i) => (i / 4) * Math.PI * 2);
+
+/** Upper lid angles, wide open and fully shut. */
+const LID_OPEN = -0.95;
+const LID_SHUT = 1.5;
+
+const eyeGeo = once(() => new THREE.SphereGeometry(0.035, 20, 16));
+const lidGeo = once(
+  () => new THREE.SphereGeometry(0.039, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55)
+);
 // ---------------------------------------------------------------------------
 // materials
 // ---------------------------------------------------------------------------
 
 function useCowMaterials() {
   return useMemo(() => {
-    const bump = hairBump();
-    const hide = new THREE.MeshStandardMaterial({
-      map: hideMap(),
-      bumpMap: bump,
-      bumpScale: 0.012,
-      roughness: 0.82,
-      metalness: 0,
-    });
-    const head = new THREE.MeshStandardMaterial({
-      map: headMap(),
-      bumpMap: bump,
-      bumpScale: 0.01,
-      roughness: 0.82,
-      metalness: 0,
-    });
-    const pale = new THREE.MeshStandardMaterial({
-      color: "#efeade",
-      bumpMap: bump,
-      bumpScale: 0.008,
-      roughness: 0.85,
-    });
-    // Two leg maps rather than one material each for the upper and lower bones:
-    // the patches die out before the knee on both of them, so the join between
-    // them is cream against cream and no longer reads as a boot. See lib/textures.
-    const upperLeg = new THREE.MeshStandardMaterial({
-      map: upperLegMap(),
-      bumpMap: bump,
-      bumpScale: 0.011,
-      roughness: 0.84,
-    });
-    const leg = new THREE.MeshStandardMaterial({
-      map: legMap(),
-      bumpMap: bump,
-      bumpScale: 0.009,
-      roughness: 0.84,
-    });
-    const dark = new THREE.MeshStandardMaterial({
-      color: "#2b2622",
-      bumpMap: bump,
-      bumpScale: 0.008,
-      roughness: 0.8,
-    });
     return {
-      hide,
-      head,
-      pale,
-      dark,
-      upperLeg,
-      leg,
-      // Hair, as opposed to coat: darker than the black of the hide, and matte,
-      // so a forelock does not catch the sun the way the shoulder next to it does.
-      // Warmer and lighter than the black of the hide on purpose: the poll it
-      // grows out of is one of the Holstein's black patches, and true black hair
-      // on it disappears completely.
-      hair: new THREE.MeshStandardMaterial({ color: "#453529", roughness: 0.96 }),
+      // The coat: one material for the whole skin, painted in the shader from
+      // where each pixel sits on the cow at rest. See `coatMaterial`.
+      coat: coatMaterial(),
+      // Matched to the white and the black of the coat, for the few loose
+      // parts that sit on one or the other: eyelids, the tail, the ears.
+      pale: new THREE.MeshStandardMaterial({ color: "#efeae0", roughness: 0.8 }),
+      dark: new THREE.MeshStandardMaterial({ color: "#1d1917", roughness: 0.78 }),
+      ink: new THREE.MeshStandardMaterial({ color: "#16110e", roughness: 0.7 }),
+      // Hair, as opposed to coat: warmer and lighter than the black of the hide
+      // on purpose, because the poll it grows out of is one of the black
+      // patches and true black hair on it disappears completely.
+      hair: new THREE.MeshStandardMaterial({ color: "#4a382b", roughness: 0.96 }),
       // The teats and the inner ear are bare skin — pinker, and shinier than
       // hair, which is a surprisingly large part of looking like an animal.
-      skin: new THREE.MeshStandardMaterial({ color: "#c98d94", roughness: 0.55 }),
-      // The muzzle is bare skin too, but it is NOT pink: a cow's nose is a dusty
-      // grey-rose plate. Painting it the same pink as a teat is most of what made
-      // the face read as a cartoon pig.
-      muzzle: new THREE.MeshStandardMaterial({ color: "#9b7d7c", roughness: 0.42 }),
-      nostril: new THREE.MeshStandardMaterial({ color: "#54373b", roughness: 0.5 }),
-      horn: new THREE.MeshStandardMaterial({ color: "#cbbfa6", roughness: 0.5 }),
-      hoof: new THREE.MeshStandardMaterial({ color: "#3a332c", roughness: 0.45 }),
-      eye: new THREE.MeshStandardMaterial({ color: "#160d07", roughness: 0.14 }),
+      skin: new THREE.MeshStandardMaterial({ color: "#d99a9d", roughness: 0.55 }),
+      nostril: new THREE.MeshStandardMaterial({ color: "#5a3036", roughness: 0.5 }),
+      horn: new THREE.MeshStandardMaterial({ color: "#d8ccb2", roughness: 0.45 }),
+      hoof: new THREE.MeshStandardMaterial({ color: "#2e2823", roughness: 0.42 }),
+      eye: new THREE.MeshStandardMaterial({ color: "#120a05", roughness: 0.08 }),
+      sclera: new THREE.MeshStandardMaterial({ color: "#f3efe6", roughness: 0.25 }),
+      tongue: new THREE.MeshStandardMaterial({ color: "#e0768a", roughness: 0.35 }),
+      star: new THREE.MeshStandardMaterial({
+        color: "#ffd84a",
+        emissive: "#ffb800",
+        emissiveIntensity: 0.6,
+        roughness: 0.4,
+      }),
       blush: new THREE.MeshStandardMaterial({
-        color: "#e8798f",
+        color: "#ef6f8c",
         transparent: true,
-        opacity: 0.75,
+        opacity: 0.8,
         roughness: 0.7,
       }),
       breath: new THREE.MeshBasicMaterial({
@@ -972,7 +670,7 @@ export default function Cow() {
 
   useEffect(() => {
     if (inCutscene) {
-      runnerRef.current = newRunner();
+      runnerRef.current = newRunner(useCowStore.getState().tickets.length);
       endedRef.current = false;
       relaxPhysics(); // start the walk to the station from a settled body
     } else {
@@ -983,9 +681,14 @@ export default function Cow() {
   useEffect(() => {
     const stopKeys = startInput();
     const stopInteract = onInteract(() => useCowStore.getState().interact());
-    const stopAction = onAction((action) =>
-      useCowStore.getState().triggerGag(action === "pet" ? "shy" : "slap")
-    );
+    const stopAction = onAction((action) => {
+      const store = useCowStore.getState();
+      // Spelled out, not `pet ? shy : slap`: that version sent the Dance key
+      // to the slap, so pressing R hit the cow.
+      if (action === "pet") store.triggerGag("shy");
+      else if (action === "slap") store.triggerGag("slap");
+      else store.toggleDance();
+    });
     return () => {
       stopKeys();
       stopInteract();
@@ -1007,10 +710,39 @@ export default function Cow() {
     // aim a little way *inside* the skull, so the join is always covered
     scratch.offset.set(0, 0, 0.07).applyEuler(head.rotation);
     scratch.target.copy(head.position).add(scratch.offset);
-    scratch.dir.copy(scratch.target).sub(NECK_ROOT);
+    scratch.dir.copy(scratch.target).sub(NECK_BASE);
     const len = Math.max(0.2, scratch.dir.length());
     neck.quaternion.setFromUnitVectors(scratch.up, scratch.dir.normalize());
     neck.scale.set(1, len, 1);
+  }
+
+  /**
+   * Put the rig in its rest pose and bind the one-piece skin to it.
+   *
+   * The skin was meshed around the cow standing square (lib/cowBody.ts), so
+   * the bones have to be standing square too at the moment of binding — every
+   * later movement of a bone is measured from here. Runs once, on the first
+   * frame, before any pose has been applied.
+   */
+  function bindCowSkin(pivot: THREE.Object3D, node: Nodes) {
+    for (const name of PART_NAMES) applyPart(node[name], BASE[name]);
+    stretchNeck(node);
+    levelHooves(node, {});
+    const bones = COW_BONES.map((n) => (n === "neck" ? neckRef.current : node[n]));
+    if (bones.some((b) => !b)) {
+      console.error("cow skin: missing bone", COW_BONES.filter((_, i) => !bones[i]));
+      return;
+    }
+    const rest = snapshotRest(pivot, bones as THREE.Object3D[]);
+    // The skin is meshed in a worker and arrives a moment later. Until it
+    // does, the cow is hidden: its eyes, horns and hooves on their own would
+    // be a much stranger sight than an empty pen.
+    pivot.visible = false;
+    void skinGeometry({ kind: "cow" }).then(([skin, jaw]) => {
+      bindSkin(skin, mats.coat, pivot, rest);
+      bindSkin(jaw, mats.coat, pivot, rest);
+      pivot.visible = true;
+    });
   }
 
   /**
@@ -1140,7 +872,7 @@ export default function Cow() {
     const k = Math.max(shut, squint);
     for (let i = 0; i < 2; i++) {
       const lid = node[`lid${i}`];
-      if (lid) lid.rotation.x = -0.55 + k * 2.05;
+      if (lid) lid.rotation.x = LID_OPEN + k * (LID_SHUT - LID_OPEN);
     }
   }
 
@@ -1177,6 +909,7 @@ export default function Cow() {
       });
       nodes.current = found;
       hairTipsRef.current = tips;
+      bindCowSkin(root, found);
     }
     const node = nodes.current;
 
@@ -1303,95 +1036,81 @@ export default function Cow() {
     swayHair(node, dt);
     blink(node, dt);
     breathe(now);
+    tongueAndStars(node, now);
   });
+
+  /** The tongue out at a gallop, and the stars after a bonk. */
+  function tongueAndStars(node: Nodes, now: number) {
+    const dazed = activeGag === "bonk";
+    const tongue = node.tongue;
+    if (tongue) {
+      const k = dazed ? 1 : gallopAmount();
+      const out = Math.max(0.001, k);
+      tongue.scale.set(out, out, out);
+      tongue.visible = k > 0.02;
+      // flapping in the wind, or hanging limp
+      const flap = dazed ? 0.15 : 1;
+      tongue.rotation.set(
+        0.35 + Math.sin(now * 15) * 0.3 * flap,
+        1.15 + Math.sin(now * 9.5) * 0.22 * flap,
+        Math.sin(now * 19) * 0.35 * flap
+      );
+    }
+    const stars = node.stars;
+    if (stars) {
+      stars.visible = dazed;
+      if (dazed) {
+        stars.rotation.y = now * 4.5;
+        stars.position.y = 0.3 + Math.sin(now * 6) * 0.015;
+        stars.children.forEach((c, i) => {
+          c.rotation.set(0, -now * 4.5 + i, Math.sin(now * 8 + i) * 0.4);
+        });
+      }
+    }
+  }
 
   return (
     <>
       <group ref={pivotRef}>
       <group name="body">
-        <mesh geometry={torsoGeo()} material={mats.hide} castShadow receiveShadow />
-        <mesh geometry={dewlapGeo()} material={mats.hide} castShadow />
-        <mesh geometry={brisketGeo()} material={mats.hide} castShadow />
-        {/* The bony topline, and the muscle over each of the four joints. These
-            all deliberately overlap what they sit on — see the note above. */}
-        <mesh geometry={toplineGeo()} material={mats.hide} castShadow />
-        {[-1, 1].map((s) => (
-          <mesh
-            key={`sh${s}`}
-            geometry={shoulderGeo()}
-            material={mats.hide}
-            position={[s * FRONT_HIP[0], 0.87, 0.44]}
-            castShadow
-          />
-        ))}
-        {[-1, 1].map((s) => (
-          <mesh
-            key={`ha${s}`}
-            geometry={haunchGeo()}
-            material={mats.hide}
-            position={[s * BACK_HIP[0], 0.855, -0.44]}
-            castShadow
-          />
-        ))}
+        {/* The body, neck, head and legs are ONE skinned mesh now, built from
+            lib/cowBody.ts and bound to the groups below on the first frame —
+            see `bindCowSkin`. What is left in this tree is the skeleton itself,
+            plus the parts a real cow also has as separate pieces: eyes, ears,
+            horns, hair, hooves, teats and a tail. */}
 
-        {/* udder, tucked up between the hind legs */}
+        {/* teats, under the udder the skin already has */}
         <group position={[0, 0.6, -0.4]}>
-          {[-1, 1].map((s) => (
-            <mesh
-              key={s}
-              geometry={udderGeo()}
-              material={mats.pale}
-              position={[s * 0.062, 0, 0]}
-              scale={[0.95, 0.88, 1.2]}
-              castShadow
-            />
-          ))}
-          {[-0.075, 0.075].map((x) =>
-            [-0.075, 0.065].map((z) => (
+          {[-0.072, 0.072].map((x) =>
+            [-0.08, 0.06].map((z) => (
               <mesh
                 key={`${x}${z}`}
-                position={[x, -0.145, z]}
+                position={[x, -0.14, z]}
                 rotation={[0, 0, x * 1.2]}
                 material={mats.skin}
               >
-                <cylinderGeometry args={[0.017, 0.013, 0.062, 7]} />
+                <cylinderGeometry args={[0.017, 0.012, 0.06, 8]} />
               </mesh>
             ))
           )}
         </group>
 
-        {/* Neck: positioned and stretched every frame by stretchNeck(). */}
-        <group ref={neckRef} position={NECK_ROOT}>
-          <group rotation={[-Math.PI / 2, 0, 0]}>
-            <mesh geometry={neckGeo()} material={mats.hide} castShadow />
-          </group>
-        </group>
+        {/* Neck: an empty bone, aimed and stretched every frame by stretchNeck(). */}
+        <group ref={neckRef} position={NECK_ROOT} />
 
         <group name="head" position={HEAD_POS}>
-          <mesh geometry={skullGeo()} material={mats.head} castShadow />
-          <mesh geometry={muzzleGeo()} material={mats.muzzle} />
-          {/* the philtrum, the groove running down between the nostrils */}
-          <mesh
-            position={[0, -0.128, MUZZLE_TIP - 0.006]}
-            rotation={[0.24, 0, 0]}
-            material={mats.nostril}
-          >
-            <boxGeometry args={[0.009, 0.042, 0.014]} />
-          </mesh>
-
-          {/* Nostrils — comma-shaped, and they flare when the cow is cross.
-              They sit a few millimetres PROUD of the front of the pad; sunk
-              flush with it they disappear and the cow has a blank nose. */}
-          <group ref={nostrilRef} position={[0, -0.092, MUZZLE_TIP - 0.004]}>
+          {/* Nostrils: dark, sitting in the dents the skin already has, and they
+              flare when the cow is cross. */}
+          <group ref={nostrilRef} position={FACE.nostrils}>
             {[-1, 1].map((s) => (
               <mesh
                 key={s}
-                position={[s * 0.04, 0, 0]}
-                rotation={[0.2, 0, s * 0.55]}
-                scale={[1, 1.45, 0.5]}
+                position={[s * 0.05, 0, 0]}
+                rotation={[0, s * 0.5, s * 0.45]}
+                scale={[0.8, 1.35, 0.6]}
                 material={mats.nostril}
               >
-                <sphereGeometry args={[0.018, 10, 8]} />
+                <sphereGeometry args={[0.017, 10, 8]} />
               </mesh>
             ))}
           </group>
@@ -1399,66 +1118,67 @@ export default function Cow() {
             <sphereGeometry args={[0.07, 8, 8]} />
           </mesh>
 
+          {/* The lower jaw is its own piece of skin (the mouth has to open), so
+              this is just its hinge — and where the tongue lives. */}
           <group name="jaw" position={BASE.jaw.pos}>
-            <mesh geometry={jawGeo()} material={mats.head} castShadow />
-            {/* the lip line. A head with no mouth reads as a mask. */}
-            {[-1, 1].map((s) => (
+            {/* Out of the side of the mouth at a gallop, flapping, and lolling
+                out when the cow has run into something. Nothing says "this
+                animal is not in control" like a tongue in the wind. */}
+            <group name="tongue" position={[0.035, -0.07, 0.17]} scale={HIDDEN}>
+              <mesh geometry={tongueGeo()} material={mats.tongue} castShadow />
+            </group>
+          </group>
+          {/* seeing stars */}
+          <group name="stars" position={[0, 0.3, -0.02]} visible={false}>
+            {STARS.map((a, i) => (
               <mesh
-                key={s}
-                position={[s * 0.032, -0.048, 0.268]}
-                rotation={[0.1, -s * 0.28, 0]}
-                material={mats.nostril}
-              >
-                <boxGeometry args={[0.07, 0.008, 0.011]} />
-              </mesh>
+                key={i}
+                geometry={starGeo()}
+                material={mats.star}
+                position={[Math.cos(a) * 0.2, Math.sin(a * 2) * 0.03, Math.sin(a) * 0.2]}
+              />
             ))}
           </group>
 
-          {/* Eyes sit out on the sides of the head, the way a prey animal's do.
-              `faceAt` puts them ON the skull rather than near it: a couple of
-              millimetres in and the whole eye disappears inside the head. */}
-          {[-1, 1].map((s, i) => (
-            <group
-              key={s}
-              position={[s * (faceAt(0.03, 0.025) - 0.016), 0.03, 0.025]}
-              rotation={[0, s * 0.78, -s * 0.12]}
-            >
-              <mesh geometry={socketGeo()} material={mats.head} scale={[0.62, 0.78, 0.62]} />
-              <mesh
-                geometry={eyeGeo()}
-                material={mats.eye}
-                position={[0, 0, 0.014]}
-                scale={[0.8, 0.95, 0.85]}
-              />
+          {/* Eyes sit out on the sides of the head, the way a prey animal's do,
+              planted ON the skin by a ray cast against the same field the skull
+              was meshed from — never by eye. */}
+          {FACE.eyes.map((e, i) => (
+            <group key={i} position={e.pos} rotation={e.rot}>
+              {/* A rim of white round a big dark iris. Real cows show almost
+                  none, but a sliver of white is what lets an eye look worried,
+                  shifty or appalled — and this cow is all three. */}
+              <mesh geometry={eyeGeo()} material={mats.sclera} scale={[1, 1.1, 0.9]} />
+              <mesh geometry={eyeGeo()} material={mats.eye} position={[0, 0, 0.011]} scale={[0.74, 0.84, 0.66]} />
               {/* catchlight: a dead eye is the fastest way to kill an animal */}
-              <mesh position={[0.007, 0.011, 0.031]}>
-                <sphereGeometry args={[0.0045, 8, 8]} />
-                <meshBasicMaterial color="#e8eef5" />
+              <mesh position={[0.009, 0.013, 0.037]}>
+                <sphereGeometry args={[0.006, 8, 8]} />
+                <meshBasicMaterial color="#f4f8ff" />
               </mesh>
-              <group name={`lid${i}`} rotation={[-0.55, 0, 0]}>
-                <mesh geometry={lidGeo()} material={mats.head} position={[0, 0, 0.008]} />
+              <group name={`lid${i}`} rotation={[LID_OPEN, 0, 0]}>
+                <mesh geometry={lidGeo()} material={i === 0 ? mats.pale : mats.dark} position={[0, 0, -0.002]} />
               </group>
               {/* lower lid, so the eye sits in a socket rather than on the surface */}
               <mesh
                 geometry={lidGeo()}
-                material={mats.head}
-                position={[0, 0, 0.008]}
-                rotation={[Math.PI + 0.42, 0, 0]}
+                material={i === 0 ? mats.pale : mats.dark}
+                position={[0, 0, -0.002]}
+                rotation={[Math.PI + 0.5, 0, 0]}
               />
             </group>
           ))}
 
           {/* angry brows — scaled to nothing until the cow has something to glare about */}
           <group name="brow" position={BASE.brow.pos} scale={BASE.brow.scale}>
-            {[-1, 1].map((s) => (
+            {FACE.brows.map((b, i) => (
               <mesh
-                key={s}
-                position={[s * 0.078, 0.086, 0.052]}
-                rotation={[0.15, s * 0.55, -s * 0.5]}
-                scale={[0.85, 0.4, 0.55]}
-                material={mats.dark}
+                key={i}
+                position={b}
+                rotation={[0.15, (i ? 1 : -1) * 0.5, (i ? -1 : 1) * 0.5]}
+                scale={[0.9, 0.36, 0.5]}
+                material={mats.ink}
               >
-                <sphereGeometry args={[0.055, 10, 8]} />
+                <sphereGeometry args={[0.055, 12, 8]} />
               </mesh>
             ))}
           </group>
@@ -1466,32 +1186,26 @@ export default function Cow() {
           {/* The inner ear faces DOWN in the ear's own frame, because the leaf
               is built flat in x/z and the resting rotation lays it out level:
               -y is the underside, which is the side you can see. */}
-          <group name="earL" position={BASE.earL.pos} rotation={BASE.earL.rot}>
-            <mesh geometry={earGeo()} material={mats.head} castShadow />
-            <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, -0.008, 0]} />
-          </group>
-          <group name="earR" position={BASE.earR.pos} rotation={BASE.earR.rot}>
-            <mesh geometry={earGeo()} material={mats.head} castShadow />
-            <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, -0.008, 0]} />
-          </group>
+          {(["earL", "earR"] as const).map((ear) => (
+            <group key={ear} name={ear} position={BASE[ear].pos} rotation={BASE[ear].rot}>
+              <group scale={0.82}>
+                <mesh geometry={earGeo()} material={mats.dark} castShadow />
+                <mesh geometry={earInnerGeo()} material={mats.skin} position={[0, -0.008, 0]} />
+              </group>
+            </group>
+          ))}
 
-          {[-1, 1].map((s) => (
+          {FACE.horns.map((pos, i) => (
             <mesh
-              key={s}
+              key={i}
               geometry={hornGeo()}
               material={mats.horn}
-              position={[s * 0.07, 0.095, -0.045]}
-              scale={[s, 1, 1]}
+              position={pos}
+              scale={[i ? 1 : -1, 1, 1]}
               castShadow
             />
           ))}
-          {/*
-            The hair. One group, so the fringe and the tuft behind it move
-            together as a clump; `swayHair` rotates it every frame off the wind
-            clock and the head springs. Its origin sits at the roots rather than
-            at the poll, so it pivots where hair actually pivots.
-          */}
-          {/* Every root here is planted ON the skull by `scalpAt`, so the group
+          {/* Every root here is planted ON the skull by `scalpY`, so the group
               itself sits at the head's own origin and each lock brings its own
               position. Each one is TWO links hinged half way along; the tip
               link is sprung in `swayHair`, which is what makes the fringe fall
@@ -1510,14 +1224,9 @@ export default function Cow() {
           </group>
 
           <group name="blush" position={BASE.blush.pos} scale={BASE.blush.scale}>
-            {[-1, 1].map((s) => (
-              <mesh
-                key={s}
-                position={[s * (faceAt(-0.03, 0.09) - 0.012), -0.03, 0.09]}
-                scale={[1, 0.7, 0.5]}
-                material={mats.blush}
-              >
-                <sphereGeometry args={[0.05, 10, 8]} />
+            {FACE.blush.map((pos, i) => (
+              <mesh key={i} position={pos} scale={[1, 0.7, 0.5]} material={mats.blush}>
+                <sphereGeometry args={[0.05, 12, 8]} />
               </mesh>
             ))}
           </group>
@@ -1540,11 +1249,11 @@ export default function Cow() {
 
         <group name="tail" position={BASE.tail.pos} rotation={BASE.tail.rot}>
           <group rotation={[Math.PI / 2, 0, 0]}>
-            <mesh geometry={tailGeo()} material={mats.hide} castShadow />
+            <mesh geometry={tailGeo()} material={mats.pale} castShadow />
           </group>
           <group name="tailTip" position={BASE.tailTip.pos}>
             <group rotation={[Math.PI / 2, 0, 0]}>
-              <mesh geometry={tailTipGeo()} material={mats.hide} />
+              <mesh geometry={tailTipGeo()} material={mats.pale} />
               <mesh geometry={switchGeo()} material={mats.hair} position={[0, 0, 0.24]} castShadow />
               {/* loose strands off the switch, so it frays instead of just ending */}
               {SWITCH.map((l, i) => (
@@ -1598,52 +1307,16 @@ function CowLeg({
   const rest = front ? FRONT_REST : BACK_REST;
   const hip = front ? FRONT_HIP : BACK_HIP;
   const x = mirror ? hip[0] : -hip[0];
-  const upper = front ? frontUpperGeo() : backUpperGeo();
-  const mid = front ? frontMidGeo() : backMidGeo();
-  const cannon = front ? frontCannonGeo() : backCannonGeo();
   const down: [number, number, number] = [Math.PI / 2, 0, 0];
 
-  const knee = front ? frontKneeGeo() : backKneeGeo();
-  // Where the fetlock sits: high enough that its own lower half is buried in the
-  // top of the hoof, so there is no bare stick of cannon between the two.
-  const fetlockY = -rig.seg[2] + 0.115;
-
+  // The groups are the leg's bones; the skin hanging off them is part of the
+  // one body mesh. Only the cloven hoof is still separate, because on a real
+  // cow it is. (There used to be dewclaws too; at any distance the game is
+  // actually played from they read as two black dots floating behind the leg.)
   return (
     <group name={hipName} position={[x, hip[1], hip[2]]} rotation={[rest.hip, 0, 0]}>
-      <group rotation={down}>
-        <mesh geometry={upper} material={mats.upperLeg} castShadow />
-      </group>
       <group name={kneeName} position={[0, -rig.seg[0], 0]} rotation={[rest.knee, 0, 0]}>
-        {/* The joint, swallowing the domed end of the bone above and the bone
-            below. Same material as the shin so there is no seam to find. */}
-        <group rotation={down}>
-          <mesh geometry={knee} material={mats.leg} castShadow />
-        </group>
-        <group rotation={down}>
-          <mesh geometry={mid} material={mats.leg} castShadow />
-        </group>
         <group name={shinName} position={[0, -rig.seg[1], 0]} rotation={[rest.shin, 0, 0]}>
-          {/* the top of the cannon, covered the same way the knee above it is */}
-          <group rotation={down}>
-            <mesh geometry={cannonTopGeo()} material={mats.leg} castShadow />
-          </group>
-          <group rotation={down}>
-            <mesh geometry={cannon} material={mats.leg} castShadow />
-          </group>
-          {/* fetlock and pastern, and the dewclaws behind them */}
-          <group position={[0, fetlockY, 0]} rotation={down}>
-            <mesh geometry={pasternGeo()} material={mats.leg} castShadow />
-          </group>
-          {[-1, 1].map((s) => (
-            <mesh
-              key={s}
-              position={[s * 0.026, fetlockY - 0.012, -0.042]}
-              scale={[0.7, 1.3, 0.7]}
-              material={mats.hoof}
-            >
-              <sphereGeometry args={[0.015, 8, 6]} />
-            </mesh>
-          ))}
           {/* The chain ends here, ON the ground — so the hoof is built upwards. */}
           <group name={hoofName} position={[0, -rig.seg[2], 0]}>
             {[-1, 1].map((s) => (
@@ -1655,7 +1328,7 @@ function CowLeg({
           {/* Same place as the hoof, and the two are never out at the same time. */}
           {hand && (
             <group name="fist" position={BASE.fist.pos} scale={BASE.fist.scale}>
-              <CowHand hide={mats.leg} nail={mats.hoof} skin={mats.skin} />
+              <CowHand hide={mats.pale} nail={mats.hoof} skin={mats.skin} />
             </group>
           )}
         </group>
@@ -1695,8 +1368,6 @@ function kissLunge(elapsed: number, dt: number): Pose {
 /** True while the cow is pressed against something, so each contact thumps once. */
 let onFence = false;
 let onProp = false;
-/** When the speed camera last went off, so it isn't one ticket per frame. */
-let lastTicket = 0;
 
 /**
  * Whatever the cow is standing next to, as the one contextual action.
@@ -1756,6 +1427,16 @@ function nearestPrompt(grassEatenAt: (number | null)[]): Prompt | null {
     label: "Have a drink",
     icon: "💧",
   });
+  // He is solid at 0.85, so this is the ring just outside where the cow can
+  // stand. Not offered while he is already talking.
+  if (!useCowStore.getState().chatting) {
+    consider(OFFICER.x, OFFICER.z, 1.9, {
+      kind: "officer",
+      id: 0,
+      label: "Talk to the officer",
+      icon: "👮",
+    });
+  }
 
   return best;
 }
@@ -1766,12 +1447,10 @@ function nearestPrompt(grassEatenAt: (number | null)[]): Prompt | null {
  */
 function checkSpeedTrap() {
   if (!cowState.outside || cowState.speed < SPEED_LIMIT) return;
-  const d = Math.hypot(SPEED_TRAP.x - cowState.x, SPEED_TRAP.z - cowState.z);
-  if (d > SPEED_TRAP_RANGE) return;
-  const t = performance.now();
-  if (t - lastTicket < 9000) return;
-  lastTicket = t;
-  useCowStore.getState().flash();
+  const { x, z } = cowState;
+  if (x < SPEED_ZONE.x0 || x > SPEED_ZONE.x1 || z < SPEED_ZONE.z0 || z > SPEED_ZONE.z1) return;
+  // the store rate-limits it to one photo a pass
+  useCowStore.getState().flash(cowState.speed);
 }
 
 /**
@@ -1792,14 +1471,17 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
   let dz = fz * axis.y + rz * axis.x;
   const len = Math.hypot(dx, dz);
   const gait = Math.min(1, cowState.speed / WALK_SPEED);
+  const flatOut = sprinting();
 
   if (len > 0.001) {
     dx /= len;
     dz /= len;
     // Half a tonne of cow doesn't start or stop instantly, and it turns wider the
-    // faster it's already going.
-    cowState.speed = approach(cowState.speed, WALK_SPEED * len, dt * 7);
-    const turn = TURN_SPEED * (1 - 0.45 * gait);
+    // faster it's already going. Getting up to a gallop takes a moment longer
+    // than getting up to a walk, which is what makes it feel like effort.
+    const top = flatOut ? GALLOP_SPEED : WALK_SPEED;
+    cowState.speed = approach(cowState.speed, top * len, dt * (cowState.speed > WALK_SPEED ? 4 : 7));
+    const turn = TURN_SPEED * (1 - 0.45 * gait) * (cowState.speed > WALK_SPEED ? 0.7 : 1);
     cowState.facing = turnToward(cowState.facing, Math.atan2(dx, dz), turn * dt);
     cowState.x += dx * cowState.speed * dt;
     cowState.z += dz * cowState.speed * dt;
@@ -1814,9 +1496,13 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
   // is tracked rather than derived, so the gap works from both directions —
   // see `resolveFence`. Walking into it is a collision, so the cow stops dead
   // and rocks forward on impact.
+  // How fast the cow was going BEFORE anything stopped it — that is the speed
+  // it hits things at.
+  const impact = cowState.speed;
   const fence = resolveFence(cowState.x, cowState.z, cowState.outside, cowState.gateOpen);
   cowState.x = fence.x;
   cowState.z = fence.z;
+  if (fence.outside && !cowState.outside) useCowStore.getState().complete("escape");
   cowState.outside = fence.outside;
   if (fence.hit) {
     if (!onFence) {
@@ -1825,6 +1511,7 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
       kickSpring(cowPhysics.headPitch, 2.2 * gait);
       kickSpring(cowPhysics.earL, 3 * gait);
       kickSpring(cowPhysics.earR, 3 * gait);
+      if (impact >= BONK_SPEED) bonked();
     }
     cowState.speed *= 0.4;
   } else {
@@ -1842,6 +1529,7 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
       onProp = true;
       kickSpring(cowPhysics.shoveZ, 0.4 * gait);
       kickSpring(cowPhysics.headPitch, 1.6 * gait);
+      if (impact >= BONK_SPEED) bonked();
     }
     cowState.speed *= 0.45;
   } else {
@@ -1854,13 +1542,80 @@ function drive(dt: number, now: number, grassEatenAt: (number | null)[]): Pose {
   // Grass.tsx lights the tuft the cow could eat, so it wants the id on its own.
   store.setNearGrass(prompt?.kind === "grass" ? prompt.id : null);
   checkSpeedTrap();
+  if (cowState.speed > GALLOP_SPEED * 0.85) store.complete("gallop");
 
   const walkAmt = Math.min(1, cowState.speed / WALK_SPEED);
   const walk = quadWalk(cowState.walkPhase, walkAmt);
+  const gallop = gallopPose(cowState.walkPhase, gallopAmount());
   // Idling fades out as the cow gets going: a walking animal is not also
   // shifting its weight from hoof to hoof.
   const still = 1 - Math.min(1, walkAmt * 3);
-  return addPoses(scalePose(idlePose(now), still), walk);
+  return addPoses(scalePose(idlePose(now), still), walk, gallop, stare(dt));
+}
+
+/**
+ * Being watched. Leave the controls alone and the cow notices: its head comes
+ * round to look straight down the lens, and it gets steadily less comfortable
+ * about it — until, if you still will not do anything, it gives you what it
+ * assumes you are waiting for.
+ */
+const STARE_LINES: [number, string][] = [
+  [16, "..."],
+  [24, "Can I help you?"],
+  [36, "Are you just going to stare at me?"],
+  [50, "I'm going to start charging for this."],
+  [66, "Fine. FINE. You want a show?"],
+];
+let stareK = 0;
+let stareSaid = 0;
+
+function stare(dt: number): Pose {
+  const idle = idleSeconds();
+  if (idle < 1) stareSaid = 0;
+  const watching = idle > 9 && cowState.speed < 0.05;
+  stareK = approach(stareK, watching ? 1 : 0, dt / (watching ? 1.6 : 0.35));
+  const store = useCowStore.getState();
+  while (stareSaid < STARE_LINES.length && idle > STARE_LINES[stareSaid][0]) {
+    store.stare(STARE_LINES[stareSaid][1]);
+    stareSaid++;
+    if (stareSaid === STARE_LINES.length) {
+      // the show: then it starts over, a full minute later
+      setTimeout(() => useCowStore.getState().toggleDance(), 1600);
+    }
+  }
+  if (stareSaid === STARE_LINES.length && idle > 75) stareSaid = 0;
+  if (stareK <= 0.001) return {};
+  // The camera sits out along `cam.yaw` from the cow, so that is the bearing
+  // the head has to turn to. A neck only goes so far round.
+  const turn = Math.max(-1.05, Math.min(1.05, angleDelta(cowState.facing, cam.yaw)));
+  return {
+    head: { rot: [-0.12 * stareK, turn * stareK, -turn * 0.12 * stareK] },
+    earL: { rot: [0.25 * stareK, 0, 0] },
+    earR: { rot: [0.25 * stareK, 0, 0] },
+  };
+}
+
+/** How far past a walk the cow is going: 0 at a walk, 1 flat out. */
+function gallopAmount(): number {
+  return Math.max(0, Math.min(1, (cowState.speed - WALK_SPEED) / (GALLOP_SPEED - WALK_SPEED)));
+}
+
+/**
+ * Ran into something at full tilt. The cow stops dead, the head is thrown
+ * back, and the `bonk` gag takes the body for a couple of seconds of seeing
+ * stars — which also, conveniently, stops it immediately galloping into the
+ * same tree again.
+ */
+function bonked() {
+  cowState.speed = 0;
+  kickSpring(cowPhysics.headPitch, -6);
+  kickSpring(cowPhysics.headRoll, 5);
+  kickSpring(cowPhysics.earL, 8);
+  kickSpring(cowPhysics.earR, -8);
+  addShake(0.45);
+  const store = useCowStore.getState();
+  store.bumpStat("bonks");
+  store.triggerGag("bonk");
 }
 
 /** Scale a whole pose layer's contribution — used to fade the idle out. */

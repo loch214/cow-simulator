@@ -413,3 +413,35 @@ export function gaitAmount(speed: number): number {
 export function stridePhase(phase: number, speed: number, dt: number): number {
   return phase + dt * speed * STRIDE_RATE;
 }
+
+// ---------------------------------------------------------------------------
+// the gallop
+// ---------------------------------------------------------------------------
+
+/**
+ * Flat out. Layered on top of `quadWalk`, which keeps the hooves honest; all
+ * this adds is the comedy of a cow that should not be going this fast — the
+ * whole body bounding twice a stride, the head thrown up and back, the ears
+ * streaming, the tail straight out behind and the mouth hanging open.
+ *
+ * `amt` is how far past a walk the cow is going, 0 (walking) to 1 (flat out).
+ */
+export function gallopPose(phase: number, amt: number): Pose {
+  if (amt <= 0.001) return {};
+  const bound = Math.abs(Math.sin(phase));
+  return {
+    body: {
+      pos: [0, bound * 0.045 * amt, 0],
+      rot: [Math.sin(phase * 2 + 0.4) * 0.065 * amt, 0, 0],
+    },
+    head: {
+      rot: [(-0.2 + Math.sin(phase * 2 + 1.2) * 0.12) * amt, 0, 0],
+      pos: [0, 0.02 * amt, 0.03 * amt],
+    },
+    earL: { rot: [(0.55 + Math.sin(phase * 4) * 0.25) * amt, 0, 0] },
+    earR: { rot: [(0.55 + Math.sin(phase * 4 + 1.3) * 0.25) * amt, 0, 0] },
+    tail: { rot: [-0.95 * amt, Math.sin(phase * 3) * 0.25 * amt, 0] },
+    tailTip: { rot: [-0.25 * amt, Math.sin(phase * 3 - 1) * 0.5 * amt, 0] },
+    jaw: { rot: [0.2 * amt, 0, 0] },
+  };
+}

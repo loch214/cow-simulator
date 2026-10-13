@@ -320,3 +320,148 @@ export function shutter() {
   noise.start(t0 + 0.13);
   noise.stop(t0 + 0.19);
 }
+
+/**
+ * Running into something at full gallop: a hollow thud and then a cartoon
+ * boing, a spring wobbling down in pitch. The boing is the joke; the thud is
+ * what makes it sound like it hurt.
+ */
+export function bonk() {
+  const c = ensureAudio();
+  const t0 = now(c);
+
+  const thud = c.createOscillator();
+  thud.type = "sine";
+  thud.frequency.setValueAtTime(140, t0);
+  thud.frequency.exponentialRampToValueAtTime(45, t0 + 0.18);
+  const tg = c.createGain();
+  tg.gain.setValueAtTime(0.55, t0);
+  tg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+  thud.connect(tg).connect(c.destination);
+  thud.start(t0);
+  thud.stop(t0 + 0.24);
+
+  const boing = c.createOscillator();
+  boing.type = "triangle";
+  const wobble = c.createOscillator();
+  wobble.frequency.setValueAtTime(18, t0);
+  wobble.frequency.linearRampToValueAtTime(7, t0 + 0.7);
+  const wg = c.createGain();
+  wg.gain.setValueAtTime(60, t0 + 0.05);
+  wg.gain.linearRampToValueAtTime(8, t0 + 0.75);
+  wobble.connect(wg).connect(boing.frequency);
+  boing.frequency.setValueAtTime(330, t0 + 0.05);
+  boing.frequency.exponentialRampToValueAtTime(160, t0 + 0.75);
+  const bg = c.createGain();
+  bg.gain.setValueAtTime(0.0001, t0 + 0.04);
+  bg.gain.exponentialRampToValueAtTime(0.22, t0 + 0.07);
+  bg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.8);
+  boing.connect(bg).connect(c.destination);
+  boing.start(t0 + 0.04);
+  wobble.start(t0 + 0.04);
+  boing.stop(t0 + 0.82);
+  wobble.stop(t0 + 0.82);
+}
+
+/** A thing ticked off the list: two bright notes going up. */
+export function ding() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  [[0, 880], [0.11, 1318.5]].forEach(([at, f]) => {
+    const o = c.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(f, t0 + at);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t0 + at);
+    g.gain.exponentialRampToValueAtTime(0.18, t0 + at + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.6);
+    o.connect(g).connect(c.destination);
+    o.start(t0 + at);
+    o.stop(t0 + at + 0.62);
+  });
+}
+
+/** The fine landing: a till drawer and a bell. Ka-ching. */
+export function kaching() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  // the drawer: a short burst of filtered noise
+  const len = Math.floor(c.sampleRate * 0.12);
+  const buf = c.createBuffer(1, len, c.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+  const n = c.createBufferSource();
+  n.buffer = buf;
+  const bp = c.createBiquadFilter();
+  bp.type = "bandpass";
+  bp.frequency.value = 2400;
+  bp.Q.value = 1.4;
+  const ng = c.createGain();
+  ng.gain.value = 0.25;
+  n.connect(bp).connect(ng).connect(c.destination);
+  n.start(t0);
+  // the bell: two inharmonic partials ringing out
+  [2093, 3135].forEach((f, i) => {
+    const o = c.createOscillator();
+    o.type = "sine";
+    o.frequency.value = f;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t0 + 0.09);
+    g.gain.exponentialRampToValueAtTime(0.14 / (i + 1), t0 + 0.1);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.9);
+    o.connect(g).connect(c.destination);
+    o.start(t0 + 0.09);
+    o.stop(t0 + 0.92);
+  });
+}
+
+/** A sheep, launched. The same bleat, an octave up and with a swoop on it. */
+export function yeet() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  const o = c.createOscillator();
+  o.type = "sawtooth";
+  o.frequency.setValueAtTime(520, t0);
+  o.frequency.exponentialRampToValueAtTime(980, t0 + 0.25);
+  o.frequency.exponentialRampToValueAtTime(400, t0 + 0.8);
+  const w = c.createOscillator();
+  w.frequency.value = 24;
+  const wg = c.createGain();
+  wg.gain.value = 50;
+  w.connect(wg).connect(o.frequency);
+  const f = c.createBiquadFilter();
+  f.type = "bandpass";
+  f.frequency.value = 1300;
+  f.Q.value = 1.4;
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.16, t0 + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.85);
+  o.connect(f).connect(g).connect(c.destination);
+  o.start(t0);
+  w.start(t0);
+  o.stop(t0 + 0.9);
+  w.stop(t0 + 0.9);
+}
+
+/** Celebration: a little ascending arpeggio, for finishing the list. */
+export function fanfare() {
+  const c = ensureAudio();
+  const t0 = now(c);
+  [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5].forEach((f, i) => {
+    const t = t0 + i * 0.13 + (i > 3 ? 0.08 : 0);
+    const o = c.createOscillator();
+    o.type = "square";
+    o.frequency.value = f;
+    const lp = c.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 2200;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.08, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + (i === 5 ? 0.9 : 0.25));
+    o.connect(lp).connect(g).connect(c.destination);
+    o.start(t);
+    o.stop(t + 0.95);
+  });
+}

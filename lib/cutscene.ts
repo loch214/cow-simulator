@@ -14,7 +14,9 @@
 import { addPoses, Pose, PoseKey, samplePose } from "./poses";
 import { bipedWalk, standPose } from "./locomotion";
 import { approach, cowState, turnToward } from "./cowState";
-import { OFFICER, PIT_RADIUS, WAYPOINTS } from "./world";
+import { OFFICER, PIT_OUTER, PIT_RADIUS, SLAPS_BEFORE_POLICE, WAYPOINTS } from "./world";
+
+const NUMBER = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT"];
 
 export type Phase =
   | "rise"
@@ -45,10 +47,19 @@ export interface CutsceneRunner {
   beat: number; // index into COMPLAINT while at the station
   beatT: number; // ms spent in the current beat
   hold: number; // ms of talking still owed before this phase may end
+  /** The conversation at the desk, which depends on the cow's record. */
+  beats: Beat[];
+  /** A point to walk round first, so the march to the station goes round the pen, not through it. */
+  via: { x: number; z: number } | null;
 }
 
-export function newRunner(): CutsceneRunner {
-  return { phase: "rise", t: 0, said: -1, beat: -1, beatT: 0, hold: 0 };
+/**
+ * `tickets` is how many speeding tickets the cow has run up. A cow with a
+ * record gets a different ending at the desk: the officer has been waiting for
+ * it to come in.
+ */
+export function newRunner(tickets = 0): CutsceneRunner {
+  return { phase: "rise", t: 0, said: -1, beat: -1, beatT: 0, hold: 0, beats: complaint(tickets), via: null };
 }
 
 /**
@@ -98,7 +109,7 @@ const COMPLAINT: Beat[] = [
   },
   {
     who: "cow",
-    line: "FIVE times. In my own field.",
+    line: `${NUMBER[SLAPS_BEFORE_POLICE] ?? SLAPS_BEFORE_POLICE} times. In my own field.`,
     // jabs a hoof back down the road toward the pen
     gestures: [
       { t: 0, pose: ARMS_DOWN },
@@ -189,6 +200,29 @@ const COMPLAINT: Beat[] = [
   },
 ];
 
+function complaint(tickets: number): Beat[] {
+  if (tickets <= 0) return COMPLAINT;
+  return [
+    ...COMPLAINT,
+    {
+      who: "officer",
+      line:
+        tickets === 1
+          ? "While you're here. There's the small matter of a speeding ticket."
+          : `While you're here. You've got ${tickets} unpaid speeding tickets.`,
+      gestures: [{ t: 0, pose: ARMS_FOLDED }],
+    },
+    {
+      who: "cow",
+      line: "...I'd like to withdraw my complaint.",
+      gestures: [
+        { t: 0, pose: ARMS_DOWN },
+        { t: 400, pose: { head: { rot: [0.3, 0.4, 0] }, legFL: { rot: [-0.3, 0, -0.2] } } },
+      ],
+    },
+  ];
+}
+
 const NO_GESTURE: PoseKey[] = [{ t: 0, pose: {} }];
 
 function beatLength(b: Beat): number {
@@ -205,6 +239,26 @@ function chatter(tMs: number): Pose {
 function listening(tMs: number): Pose {
   const t = tMs / 1000;
   return { head: { rot: [0.06 + Math.sin(t * 1.6) * 0.06, Math.sin(t * 0.9) * 0.05, 0] } };
+}
+
+/**
+ * The scripted walk ignores collision, so it has to choose a path that does
+ * not need any. A cow slapped for the last time out in the far field used to
+ * march to the station in a straight line — straight through the pen fence,
+ * twice. If that line passes the pen, go round the side of it first.
+ */
+function detour(tx: number, tz: number): { x: number; z: number } | null {
+  const ax = cowState.x;
+  const az = cowState.z;
+  const dx = tx - ax;
+  const dz = tz - az;
+  const len2 = dx * dx + dz * dz || 1;
+  // closest approach of the segment to the middle of the pen
+  const u = Math.max(0, Math.min(1, -(ax * dx + az * dz) / len2));
+  const cx = ax + dx * u;
+  const cz = az + dz * u;
+  if (Math.hypot(cx, cz) > PIT_OUTER + 0.4) return null;
+  return { x: 2, z: (az >= 0 ? 1 : -1) * (PIT_OUTER + 1.8) };
 }
 
 function seek(tx: number, tz: number, speed: number, dt: number): boolean {
@@ -291,6 +345,7 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
       // when the fifth slap lands. No point walking back in to walk out again.
       if (cowState.stand >= 1 && runner.t > 900 && quiet()) {
         next(cowState.outside ? "toStation" : "toGate");
+        if (cowState.outside) runner.via = detour(WAYPOINTS.stationFront.x, WAYPOINTS.stationFront.z);
       }
       break;
 
@@ -315,7 +370,9 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
         runner.said = 0;
         speak("I'm reporting this.");
       }
-      if (seek(WAYPOINTS.stationFront.x, WAYPOINTS.stationFront.z, ANGRY_SPEED, dt) && quiet()) {
+      if (runner.via) {
+        if (seek(runner.via.x, runner.via.z, ANGRY_SPEED, dt)) runner.via = null;
+      } else if (seek(WAYPOINTS.stationFront.x, WAYPOINTS.stationFront.z, ANGRY_SPEED, dt) && quiet()) {
         next("complain");
       }
       break;
@@ -331,13 +388,13 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
       if (runner.beat < 0) {
         runner.beat = 0;
         runner.beatT = 0;
-        speak(COMPLAINT[0].line, COMPLAINT[0].who);
-      } else if (runner.beatT >= beatLength(COMPLAINT[runner.beat]) && quiet()) {
-        if (runner.beat < COMPLAINT.length - 1) {
+        speak(runner.beats[0].line, runner.beats[0].who);
+      } else if (runner.beatT >= beatLength(runner.beats[runner.beat]) && quiet()) {
+        if (runner.beat < runner.beats.length - 1) {
           runner.beat++;
           runner.beatT = 0;
-          speak(COMPLAINT[runner.beat].line, COMPLAINT[runner.beat].who);
-        } else if (runner.beatT >= beatLength(COMPLAINT[runner.beat]) + 600) {
+          speak(runner.beats[runner.beat].line, runner.beats[runner.beat].who);
+        } else if (runner.beatT >= beatLength(runner.beats[runner.beat]) + 600) {
           next("backToGate");
         }
       }
@@ -355,7 +412,8 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
       cowState.gateOpen = approach(cowState.gateOpen, 1, dt / 0.7);
       if (runner.t > 300 && runner.said < 0) {
         runner.said = 0;
-        speak("They're looking into it.");
+        // A cow that just withdrew its complaint has a different walk home.
+        speak(runner.beats.length > COMPLAINT.length ? "We will never speak of this." : "They're looking into it.");
       }
       if (seek(WAYPOINTS.gateOutside.x, WAYPOINTS.gateOutside.z, HOME_SPEED, dt) && quiet()) {
         next("backInside");
@@ -365,7 +423,7 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
     case "backInside":
       if (runner.t > 500 && runner.said < 0) {
         runner.said = 0;
-        speak("Case number and everything.");
+        speak(runner.beats.length > COMPLAINT.length ? "Bales. Of. HAY." : "Case number and everything.");
       }
       if (seek(WAYPOINTS.penCentre.x, WAYPOINTS.penCentre.z, HOME_SPEED, dt) && quiet()) {
         next("closeGate");
@@ -406,7 +464,7 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
   const layers: Pose[] = [standPose(cowState.stand)];
   if (cowState.speed > 0.01) layers.push(bipedWalk(cowState.walkPhase, cowState.stand));
   if (runner.phase === "complain" && runner.beat >= 0) {
-    const beat = COMPLAINT[runner.beat];
+    const beat = runner.beats[runner.beat];
     layers.push(samplePose(beat.gestures ?? NO_GESTURE, runner.beatT));
     layers.push(beat.who === "cow" ? chatter(runner.beatT) : listening(runner.beatT));
   }
@@ -423,5 +481,5 @@ export function stepCutscene(runner: CutsceneRunner, dt: number): StepResult {
 /** Who is doing the talking right now, so the officer can animate to match. */
 export function currentSpeaker(runner: CutsceneRunner | null): Speaker | null {
   if (!runner || runner.phase !== "complain" || runner.beat < 0) return null;
-  return COMPLAINT[runner.beat].who;
+  return runner.beats[runner.beat].who;
 }

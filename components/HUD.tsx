@@ -7,6 +7,8 @@ import { useIsTouch } from "@/lib/useIsTouch";
 import { enterImmersive, exitImmersive, useIsFullscreen, useIsPortrait } from "@/lib/viewport";
 import { SLAPS_BEFORE_POLICE } from "@/lib/world";
 import RotateHint from "./RotateHint";
+import TicketCard from "./TicketCard";
+import { Finale, GoalList, GoalToast } from "./Progress";
 
 export default function HUD() {
   const started = useCowStore((s) => s.started);
@@ -46,6 +48,10 @@ export default function HUD() {
       {flashSeq > 0 && (
         <div key={flashSeq} className="cam-flash absolute -inset-8 bg-white" />
       )}
+
+      <GoalList touch={touch} />
+      <GoalToast />
+      <TicketCard touch={touch} />
 
       {/* speech bubble — labelled, because two of them talk at the station */}
       <div className="absolute inset-x-0 top-3 flex justify-center px-4">
@@ -168,6 +174,8 @@ export default function HUD() {
         />
       </div>
 
+      <Finale />
+
       {touch ? (
         <TouchHints portrait={portrait} fullscreen={fullscreen} />
       ) : (
@@ -175,7 +183,7 @@ export default function HUD() {
           className="hint-fade absolute bottom-4 left-4 hidden rounded-xl bg-black/35 px-3 py-2 text-xs leading-relaxed text-white/90 sm:block"
           style={{ "--hint-ms": "14000ms" } as React.CSSProperties}
         >
-          <div><b>WASD</b> walk · <b>mouse</b> look · <b>scroll</b> zoom</div>
+          <div><b>WASD</b> walk · <b>Shift</b> gallop · <b>mouse</b> look · <b>scroll</b> zoom</div>
         </div>
       )}
     </div>

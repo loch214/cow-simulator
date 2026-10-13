@@ -30,7 +30,25 @@ const ACTION_KEYS: Record<string, Action> = {
   KeyR: "dance",
 };
 
+/** Either Shift: the gallop. Held, not toggled. */
+const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);
+
+/** When the player last did anything at all — for the cow noticing it is being watched. */
+let lastInput = 0;
+const touched = () => {
+  lastInput = performance.now();
+};
+/** Count something outside the input module (tapping through the title card) as activity. */
+export const noteInput = touched;
+
+/** Seconds since the player last touched a control. */
+export function idleSeconds(): number {
+  if (lastInput === 0) touched();
+  return (performance.now() - lastInput) / 1000;
+}
+
 function onKeyDown(e: KeyboardEvent) {
+  touched();
   // The mouse belongs to the game by default. Pointer lock can only be asked for
   // from inside a real user gesture, so the first key you press takes it back
   // after Esc without you having to click anything.
@@ -41,6 +59,7 @@ function onKeyDown(e: KeyboardEvent) {
     held.add(e.code);
     e.preventDefault(); // stop arrow keys from scrolling the page
   }
+  if (SPRINT_KEYS.has(e.code)) held.add(e.code);
   if (e.repeat) return;
   if (e.code === "KeyE") interactHandlers.forEach((h) => h());
   const action = ACTION_KEYS[e.code];
@@ -85,6 +104,7 @@ export function onAction(handler: (action: Action) => void): () => void {
 }
 
 export function setStick(x: number, y: number) {
+  touched();
   touchStick.x = x;
   touchStick.y = y;
 }
@@ -102,6 +122,17 @@ function markTouch() {
   if (touchSeen) return;
   touchSeen = true;
   touchListeners.forEach((h) => h(true));
+}
+
+/**
+ * Whether the player is asking for a gallop: Shift on a keyboard, or the touch
+ * stick pushed right out to its rim. A thumb resting part way out walks; shoving
+ * it to the edge is the same intent as holding Shift, and needs no extra button
+ * in a layout that is already out of room.
+ */
+export function sprinting(): boolean {
+  for (const code of SPRINT_KEYS) if (held.has(code)) return true;
+  return Math.hypot(touchStick.x, touchStick.y) > 0.93;
 }
 
 /** Movement intent in screen space: x = strafe (+ right), y = forward (+ away). */
@@ -204,6 +235,7 @@ export function attachLook(el: HTMLElement): () => void {
   };
 
   const onPointerMove = (e: PointerEvent) => {
+    touched();
     if (cam.locked) {
       addLook(e.movementX, e.movementY, MOUSE_SENS);
       return;
@@ -244,6 +276,7 @@ export function attachLook(el: HTMLElement): () => void {
 
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    touched();
     // `deltaY` means different things depending on `deltaMode`: pixels, lines
     // or pages. Untranslated, one notch of a page-mode wheel is a hundred
     // times one notch of a pixel-mode one. And the clamp is for inertial
